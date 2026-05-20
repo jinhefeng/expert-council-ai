@@ -1,36 +1,52 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Design Council AI
+
+一个给设计师使用的本地 AI 专家圆桌原型。
+
+## 当前状态
+
+- Next.js 本地网站
+- 专家角色选择
+- Angular / Vue 前端开发可行性评审角色
+- 自定义人物角色，本地保存
+- 主持模式选择
+- Mock 讨论结果
+- 千问 Qwen 接口预留
+- 多模型适配层雏形
 
 ## Getting Started
 
-First, run the development server:
+安装依赖已经完成。运行本地开发服务：
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+打开 [http://localhost:3000](http://localhost:3000)。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+本项目在 Codex 内置 Node 环境里使用 WASM + Webpack 跑 Next.js，避免 macOS 对原生 npm 模块的签名限制。
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Qwen
 
-## Learn More
+复制 `.env.local.example` 为 `.env.local`，填入：
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+DASHSCOPE_API_KEY=你的 API Key
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_MODEL=qwen-plus
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+页面里选择 `Qwen` 后，如果检测到 key，会走真实模型；否则自动回退到 mock。
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## 关键文件
 
-## Deploy on Vercel
+- `src/app/page.tsx`：本地产品界面
+- `src/app/api/discussions/route.ts`：讨论 API
+- `src/lib/experts.ts`：专家角色配置
+- `src/lib/model-router.ts`：模型适配和讨论编排
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## 下一步
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. 确认专家角色和界面结构。
+2. 接入 Qwen API Key。
+3. 把真实模型输出改成稳定 JSON。
+4. 增加项目记忆和历史讨论。

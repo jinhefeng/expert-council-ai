@@ -18,6 +18,9 @@ importers:
         specifier: 19.2.4
         version: 19.2.4(react@19.2.4)
     devDependencies:
+      '@next/swc-wasm-nodejs':
+        specifier: ^16.2.6
+        version: 16.2.6
       '@tailwindcss/postcss':
         specifier: ^4
         version: 4.3.0
@@ -383,6 +386,9 @@ packages:
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+
+  '@next/swc-wasm-nodejs@16.2.6':
+    resolution: {integrity: sha512-hwa9pdxfzDsug/m4eukZiy2bOXasDAlZG41YCNHqJfXaVQ0c544ox6MvAbvJn7GaVHDrkD+pwVeJz2djKjcsUA==}
 
   '@next/swc-win32-arm64-msvc@16.2.6':
     resolution: {integrity: sha512-LZXpTlPyS5v7HhSmnvsLGP3iIYgYOBnc8r8ArlT55sGHV89bR2HlDdBjWQ+PY6SJMmk8TuVGFuxalnP3k/0Dwg==}
@@ -2264,6 +2270,8 @@ snapshots:
 
   '@next/swc-linux-x64-musl@16.2.6':
     optional: true
+
+  '@next/swc-wasm-nodejs@16.2.6': {}
 
   '@next/swc-win32-arm64-msvc@16.2.6':
     optional: true
