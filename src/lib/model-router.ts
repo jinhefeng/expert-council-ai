@@ -42,8 +42,6 @@ export type DiscussionResponse = {
   promptPreview: string;
 };
 
-const MAX_EXPERTS = 5;
-
 export async function createDiscussion(
   input: DiscussionRequest,
 ): Promise<DiscussionResponse> {
@@ -376,7 +374,7 @@ function resolveSelectedExperts(ids: string[], customExperts: Expert[] = []) {
     .filter((expert): expert is Expert => Boolean(expert))
     .filter((expert) => idSet.has(expert.id));
 
-  return [...builtInExperts, ...safeCustomExperts].slice(0, MAX_EXPERTS);
+  return [...builtInExperts, ...safeCustomExperts];
 }
 
 function sanitizeCustomExpert(expert: Expert): Expert | null {

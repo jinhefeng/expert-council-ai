@@ -13,7 +13,6 @@ import { experts, moderatorModes, type Expert } from "@/lib/experts";
 import type { DiscussionResponse } from "@/lib/model-router";
 
 const CUSTOM_EXPERTS_STORAGE_KEY = "design-council-custom-experts";
-const MAX_SELECTED_EXPERTS = 5;
 
 type SourceItem = {
   id: string;
@@ -55,6 +54,8 @@ export default function Home() {
   const [customExperts, setCustomExperts] = useState<Expert[]>([]);
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<Expert | null>(null);
+  const [isRolePanelCollapsed, setIsRolePanelCollapsed] = useState(false);
+  const [isControlPanelCollapsed, setIsControlPanelCollapsed] = useState(false);
   const [customDraft, setCustomDraft] = useState({
     name: "",
     title: "",
@@ -98,10 +99,6 @@ export default function Home() {
     setSelectedExpertIds((current) => {
       if (current.includes(id)) {
         return current.filter((expertId) => expertId !== id);
-      }
-
-      if (current.length >= MAX_SELECTED_EXPERTS) {
-        return current;
       }
 
       return [...current, id];
@@ -168,9 +165,7 @@ export default function Home() {
 
     const nextExperts = [...customExperts, expert];
     persistCustomExperts(nextExperts);
-    setSelectedExpertIds((current) =>
-      current.length < MAX_SELECTED_EXPERTS ? [...current, expert.id] : current,
-    );
+    setSelectedExpertIds((current) => [...current, expert.id]);
     closeCustomModal();
   }
 
@@ -360,9 +355,14 @@ export default function Home() {
     <main className="app-shell">
       <header className="app-header">
         <div className="header-inner">
-          <div>
-            <p className="eyebrow">Design Council AI</p>
-            <h1>设计专家圆桌</h1>
+          <div className="brand-lockup">
+            <div className="brand-mark" aria-hidden="true">
+              DC
+            </div>
+            <div>
+              <p className="eyebrow">Design Council AI</p>
+              <h1>设计问题，不止一个答案。</h1>
+            </div>
           </div>
           <div className="status-group">
             <span className="status-chip">{selectedExperts.length} 位专家</span>
@@ -375,109 +375,156 @@ export default function Home() {
         </div>
       </header>
 
-      <form className="workspace" onSubmit={submitDiscussion}>
-        <section className="panel">
-          <div className="panel-heading">
-            <h2>专家角色</h2>
-            <span>最多 {MAX_SELECTED_EXPERTS} 位</span>
-          </div>
-          <div className="role-list">
-            {experts.map((expert) => {
-              const isSelected = selectedExpertIds.includes(expert.id);
-
-              return (
-                <button
-                  className={`role-card ${isSelected ? "is-selected" : ""}`}
-                  key={expert.id}
-                  type="button"
-                  onClick={() => toggleExpert(expert.id)}
-                >
-                  <div className="role-topline">
-                    <div>
-                      <p className="role-name">{expert.name}</p>
-                      <p className="role-title">{expert.title}</p>
-                    </div>
-                    <span
-                      className={`checkmark ${isSelected ? "is-active" : ""}`}
-                      aria-hidden="true"
-                    />
-                  </div>
-                  <p className="role-lens">{expert.lens}</p>
-                </button>
-              );
-            })}
-          </div>
-
-          {customExperts.length ? (
-            <div className="custom-role-section">
-              <div className="subheading">
-                <h3>自定义人物</h3>
-                <span>本地保存</span>
+      <form
+        className={`workspace ${
+          isRolePanelCollapsed ? "is-role-collapsed" : ""
+        } ${isControlPanelCollapsed ? "is-control-collapsed" : ""}`}
+        onSubmit={submitDiscussion}
+      >
+        <section
+          className={`panel side-panel role-panel ${
+            isRolePanelCollapsed ? "is-collapsed" : ""
+          }`}
+        >
+          {isRolePanelCollapsed ? (
+            <button
+              aria-label="展开专家席位"
+              className="panel-rail"
+              type="button"
+              onClick={() => setIsRolePanelCollapsed(false)}
+            >
+              <span className="rail-count">{selectedExperts.length}</span>
+              <span>专家</span>
+              <span aria-hidden="true">›</span>
+            </button>
+          ) : (
+            <>
+              <div className="panel-heading side-panel-heading">
+                <div>
+                  <h2>专家席位</h2>
+                </div>
+                <div className="panel-heading-actions">
+                  <button
+                    aria-label="收起专家席位"
+                    className="panel-toggle-button"
+                    type="button"
+                    onClick={() => setIsRolePanelCollapsed(true)}
+                  >
+                    <SidebarToggleIcon side="left" />
+                  </button>
+                </div>
+              </div>
+              <div className="selected-strip" aria-label="当前参与专家">
+                {selectedExperts.map((expert) => (
+                  <span key={expert.id}>{expert.name}</span>
+                ))}
               </div>
               <div className="role-list">
-                {customExperts.map((expert) => {
+                {experts.map((expert) => {
                   const isSelected = selectedExpertIds.includes(expert.id);
 
                   return (
-                    <div
-                      className={`role-card custom-role-card ${
-                        isSelected ? "is-selected" : ""
-                      }`}
+                    <button
+                      className={`role-card ${isSelected ? "is-selected" : ""}`}
                       key={expert.id}
+                      type="button"
+                      onClick={() => toggleExpert(expert.id)}
                     >
-                      <button
-                        className="role-toggle"
-                        type="button"
-                        onClick={() => toggleExpert(expert.id)}
-                      >
-                        <div className="role-topline">
-                          <div>
-                            <p className="role-name">{expert.name}</p>
-                            <p className="role-title">{expert.title}</p>
-                          </div>
-                          <span
-                            className={`checkmark ${
-                              isSelected ? "is-active" : ""
-                            }`}
-                            aria-hidden="true"
-                          />
+                      <div className="role-topline">
+                        <div>
+                          <p className="role-name">{expert.name}</p>
+                          <p className="role-title">{expert.title}</p>
                         </div>
-                        <p className="role-lens">{expert.lens}</p>
-                      </button>
-                      <button
-                        className="text-button"
-                        type="button"
-                        onClick={() => setDeleteCandidate(expert)}
-                      >
-                        删除
-                      </button>
-                    </div>
+                        <span
+                          className={`checkmark ${
+                            isSelected ? "is-active" : ""
+                          }`}
+                          aria-hidden="true"
+                        />
+                      </div>
+                      <p className="role-lens">{expert.lens}</p>
+                      <div className="role-focus-tags">
+                        {expert.focus.slice(0, 3).map((item) => (
+                          <span key={item}>{item}</span>
+                        ))}
+                      </div>
+                    </button>
                   );
                 })}
               </div>
-            </div>
-          ) : null}
 
-          <div className="custom-role-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={openCustomModal}
-            >
-              添加自定义角色
-            </button>
-          </div>
+              {customExperts.length ? (
+                <div className="custom-role-section">
+                  <div className="subheading">
+                    <h3>自定义人物</h3>
+                    <span>本地保存</span>
+                  </div>
+                  <div className="role-list">
+                    {customExperts.map((expert) => {
+                      const isSelected = selectedExpertIds.includes(expert.id);
+
+                      return (
+                        <div
+                          className={`role-card custom-role-card ${
+                            isSelected ? "is-selected" : ""
+                          }`}
+                          key={expert.id}
+                        >
+                          <button
+                            className="role-toggle"
+                            type="button"
+                            onClick={() => toggleExpert(expert.id)}
+                          >
+                            <div className="role-topline">
+                              <div>
+                                <p className="role-name">{expert.name}</p>
+                                <p className="role-title">{expert.title}</p>
+                              </div>
+                              <span
+                                className={`checkmark ${
+                                  isSelected ? "is-active" : ""
+                                }`}
+                                aria-hidden="true"
+                              />
+                            </div>
+                            <p className="role-lens">{expert.lens}</p>
+                            <div className="role-focus-tags">
+                              {expert.focus.slice(0, 3).map((item) => (
+                                <span key={item}>{item}</span>
+                              ))}
+                            </div>
+                          </button>
+                          <button
+                            className="text-button"
+                            type="button"
+                            onClick={() => setDeleteCandidate(expert)}
+                          >
+                            删除
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="custom-role-actions">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={openCustomModal}
+                >
+                  + 自定义角色
+                </button>
+              </div>
+            </>
+          )}
         </section>
 
-        <section
-          className="panel discussion-panel chat-panel"
-        >
+        <section className="panel discussion-panel chat-panel">
           <div className="panel-heading discussion-heading">
             <div>
-              <h2>讨论区</h2>
-              <p className="panel-subtitle">
-                直接提问即可，图片和文件可以按需拖入或用 + 添加。
-              </p>
+              <h2>圆桌讨论</h2>
             </div>
             <div className="segmented-control">
               {(["mock", "qwen"] as const).map((option) => (
@@ -566,8 +613,8 @@ export default function Home() {
             ) : (
               <div className="empty-chat">
                 <p className="empty-eyebrow">Design Council AI</p>
-                <h3>选择专家，然后开始提问</h3>
-                <p>可以先描述设计问题，也可以用 + 附上截图或 PRD。</p>
+                <h3>召集一个设计评审会</h3>
+                <p>先抛出问题，专家会从不同判断框架给出分歧、共识和行动建议。</p>
                 <div className="empty-suggestions">
                   <button
                     type="button"
@@ -680,30 +727,73 @@ export default function Home() {
           </div>
         </section>
 
-        <aside className="panel">
-          <h2>主持模式</h2>
-          <div className="moderator-list">
-            {moderatorModes.map((mode) => (
-              <button
-                className={`moderator-card ${
-                  moderatorId === mode.id ? "is-selected" : ""
-                }`}
-                key={mode.id}
-                type="button"
-                onClick={() => setModeratorId(mode.id)}
-              >
-                <p>{mode.name}</p>
-                <span>{mode.description}</span>
-              </button>
-            ))}
-          </div>
+        <aside
+          className={`panel side-panel control-panel ${
+            isControlPanelCollapsed ? "is-collapsed" : ""
+          }`}
+        >
+          {isControlPanelCollapsed ? (
+            <button
+              aria-label="展开会议设置"
+              className="panel-rail"
+              type="button"
+              onClick={() => setIsControlPanelCollapsed(false)}
+            >
+              <span className="rail-count">设</span>
+              <span>设置</span>
+              <span aria-hidden="true">‹</span>
+            </button>
+          ) : (
+            <>
+              <div className="panel-heading side-panel-heading">
+                <div>
+                  <h2>会议设置</h2>
+                </div>
+                <button
+                  aria-label="收起会议设置"
+                  className="panel-toggle-button"
+                  type="button"
+                  onClick={() => setIsControlPanelCollapsed(true)}
+                >
+                  <SidebarToggleIcon side="right" />
+                </button>
+              </div>
+              <div className="control-block">
+                <p className="control-label">本轮引擎</p>
+                <div className="engine-list">
+                  <span>{provider === "qwen" ? "Qwen" : "Local Mock"}</span>
+                  <span>{selectedExperts.length} perspectives</span>
+                  <span>{sources.length} attachments</span>
+                </div>
+              </div>
 
-          {discussion ? (
-            <div className="prompt-panel">
-              <h2>Prompt</h2>
-              <pre>{discussion.promptPreview}</pre>
-            </div>
-          ) : null}
+              <div className="control-block">
+                <p className="control-label">主持模式</p>
+                <div className="moderator-list">
+                  {moderatorModes.map((mode) => (
+                    <button
+                      className={`moderator-card ${
+                        moderatorId === mode.id ? "is-selected" : ""
+                      }`}
+                      key={mode.id}
+                      type="button"
+                      onClick={() => setModeratorId(mode.id)}
+                    >
+                      <p>{mode.name}</p>
+                      <span>{mode.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {discussion ? (
+                <div className="prompt-panel">
+                  <p className="control-label">提示词预览</p>
+                  <pre>{discussion.promptPreview}</pre>
+                </div>
+              ) : null}
+            </>
+          )}
         </aside>
 
         {isCustomModalOpen ? (
@@ -885,4 +975,33 @@ function formatFileSize(size: number) {
   }
 
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function SidebarToggleIcon({ side }: { side: "left" | "right" }) {
+  const dividerX = side === "left" ? 9 : 15;
+
+  return (
+    <svg
+      aria-hidden="true"
+      className="panel-toggle-svg"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <rect
+        height="15.5"
+        rx="4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        width="16"
+        x="4"
+        y="4.25"
+      />
+      <path
+        d={`M${dividerX} 8v8`}
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.7"
+      />
+    </svg>
+  );
 }
