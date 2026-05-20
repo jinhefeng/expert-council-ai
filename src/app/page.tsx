@@ -1,11 +1,37 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  ChangeEvent,
+  DragEvent,
+  FormEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { experts, moderatorModes, type Expert } from "@/lib/experts";
 import type { DiscussionResponse } from "@/lib/model-router";
 
 const CUSTOM_EXPERTS_STORAGE_KEY = "design-council-custom-experts";
 const MAX_SELECTED_EXPERTS = 5;
+
+type SourceItem = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  kind: "image" | "document" | "text" | "file";
+  previewUrl?: string;
+  textSnippet?: string;
+};
+
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources?: SourceItem[];
+  discussion?: DiscussionResponse;
+};
 
 export default function Home() {
   const [selectedExpertIds, setSelectedExpertIds] = useState([
@@ -16,10 +42,13 @@ export default function Home() {
   const [question, setQuestion] = useState(
     "这个 SaaS 首页首屏应该怎么评审？",
   );
-  const [projectContext, setProjectContext] = useState("");
+  const [projectContext] = useState("");
   const [moderatorId, setModeratorId] = useState("balanced");
   const [provider, setProvider] = useState<"mock" | "qwen">("mock");
   const [discussion, setDiscussion] = useState<DiscussionResponse | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sources, setSources] = useState<SourceItem[]>([]);
+  const [isDraggingSources, setIsDraggingSources] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [customError, setCustomError] = useState("");
@@ -33,6 +62,7 @@ export default function Home() {
     temperament: "",
     systemPrompt: "",
   });
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const loadCustomExperts = window.setTimeout(() => {
@@ -161,18 +191,133 @@ export default function Home() {
     setDeleteCandidate(null);
   }
 
+  async function addSourceFiles(fileList: FileList | null) {
+    if (!fileList?.length) {
+      return;
+    }
+
+    const nextSources = await Promise.all(
+      Array.from(fileList).map(async (file) => {
+        const kind = getSourceKind(file);
+        const source: SourceItem = {
+          id: `source-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          name: file.name,
+          type: file.type || "unknown",
+          size: file.size,
+          kind,
+        };
+
+        if (kind === "image") {
+          source.previewUrl = URL.createObjectURL(file);
+        }
+
+        if (kind === "text" && file.size < 240_000) {
+          source.textSnippet = await file.text();
+        }
+
+        return source;
+      }),
+    );
+
+    setSources((current) => [...current, ...nextSources]);
+  }
+
+  function handleSourceInputChange(event: ChangeEvent<HTMLInputElement>) {
+    void addSourceFiles(event.target.files);
+    event.target.value = "";
+  }
+
+  function removeSource(id: string) {
+    setSources((current) => {
+      const source = current.find((item) => item.id === id);
+
+      if (source?.previewUrl) {
+        URL.revokeObjectURL(source.previewUrl);
+      }
+
+      return current.filter((item) => item.id !== id);
+    });
+  }
+
+  function handleDragOver(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+
+    if (event.dataTransfer.types.includes("Files")) {
+      setIsDraggingSources(true);
+    }
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setIsDraggingSources(false);
+    }
+  }
+
+  function handleDrop(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    setIsDraggingSources(false);
+    void addSourceFiles(event.dataTransfer.files);
+  }
+
+  function buildSourceContext() {
+    if (!sources.length) {
+      return "";
+    }
+
+    return [
+      "用户上传的资料：",
+      ...sources.map((source, index) =>
+        [
+          `${index + 1}. ${source.name}，类型：${source.kind}，大小：${formatFileSize(source.size)}`,
+          source.textSnippet
+            ? `文本摘录：${source.textSnippet.slice(0, 1200)}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      ),
+      "如果资料是图片或二进制文档，当前版本先使用文件名和用户补充的背景进行判断；接入视觉/文档解析模型后再读取内容。",
+    ].join("\n");
+  }
+
   async function submitDiscussion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    const userQuestion = question.trim();
+
+    if (!userQuestion) {
+      setError("请先输入要讨论的问题。");
+      return;
+    }
+
     setError("");
     setIsLoading(true);
 
+    const messageSources = [...sources];
+    const conversationHistory = messages.slice(-8).map((message) => ({
+      role: message.role,
+      content: message.content,
+      sourceNames: message.sources?.map((source) => source.name),
+    }));
+    const userMessage: ChatMessage = {
+      id: `message-${Date.now()}`,
+      role: "user",
+      content: userQuestion,
+      sources: messageSources,
+    };
+    setMessages((current) => [...current, userMessage]);
+
     try {
+      const sourceContext = buildSourceContext();
       const response = await fetch("/api/discussions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          question,
-          projectContext,
+          question: userQuestion,
+          conversationHistory,
+          projectContext: [projectContext.trim(), sourceContext]
+            .filter(Boolean)
+            .join("\n\n"),
           expertIds: selectedExpertIds,
           customExperts: customExperts.filter((expert) =>
             selectedExpertIds.includes(expert.id),
@@ -189,6 +334,17 @@ export default function Home() {
       }
 
       setDiscussion(payload);
+      setMessages((current) => [
+        ...current,
+        {
+          id: `message-${Date.now()}-assistant`,
+          role: "assistant",
+          content: payload.synthesis.summary,
+          discussion: payload,
+        },
+      ]);
+      setQuestion("");
+      setSources([]);
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -210,6 +366,8 @@ export default function Home() {
           </div>
           <div className="status-group">
             <span className="status-chip">{selectedExperts.length} 位专家</span>
+            <span className="status-chip">{messages.length} 条上下文</span>
+            <span className="status-chip">{sources.length} 个资料</span>
             <span className="status-chip">
               {provider === "qwen" ? "Qwen Ready" : "Mock Mode"}
             </span>
@@ -311,9 +469,16 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="panel discussion-panel">
+        <section
+          className="panel discussion-panel chat-panel"
+        >
           <div className="panel-heading discussion-heading">
-            <h2>本次讨论</h2>
+            <div>
+              <h2>讨论区</h2>
+              <p className="panel-subtitle">
+                直接提问即可，图片和文件可以按需拖入或用 + 添加。
+              </p>
+            </div>
             <div className="segmented-control">
               {(["mock", "qwen"] as const).map((option) => (
                 <button
@@ -328,89 +493,191 @@ export default function Home() {
             </div>
           </div>
 
-          <label className="field">
-            <span>设计问题</span>
-            <textarea
-              className="textarea question-input"
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-            />
-          </label>
+          <section className="chat-thread" aria-label="专家圆桌聊天记录">
+            {messages.length ? (
+              messages.map((message) => (
+                <article
+                  className={`chat-message ${message.role}`}
+                  key={message.id}
+                >
+                  <div className="message-avatar">
+                    {message.role === "user" ? "你" : "议"}
+                  </div>
+                  <div className="message-body">
+                    <p className="message-content">{message.content}</p>
+                    {message.sources?.length ? (
+                      <div className="source-chip-row">
+                        {message.sources.map((source) => (
+                          <span className="source-chip" key={source.id}>
+                            {source.name}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {message.discussion ? (
+                      <div className="assistant-result">
+                        <div className="round-list">
+                          {message.discussion.expertRounds.map((round) => (
+                            <article className="result-card" key={round.expertId}>
+                              <div className="result-card-heading">
+                                <h3>{round.expertName}</h3>
+                                <p>{round.title}</p>
+                              </div>
+                              <div className="result-grid">
+                                <p>
+                                  <strong>立场：</strong>
+                                  {round.stance}
+                                </p>
+                                <p>
+                                  <strong>风险：</strong>
+                                  {round.concern}
+                                </p>
+                                <p>
+                                  <strong>建议：</strong>
+                                  {round.recommendation}
+                                </p>
+                                <p>
+                                  <strong>取舍：</strong>
+                                  {round.tradeoff}
+                                </p>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
 
-          <label className="field">
-            <span>项目背景</span>
-            <textarea
-              className="textarea context-input"
-              placeholder="品牌、用户、页面类型、目标、限制条件"
-              value={projectContext}
-              onChange={(event) => setProjectContext(event.target.value)}
-            />
-          </label>
+                        <article className="synthesis-card">
+                          <h3>主持人综合</h3>
+                          <p>{message.discussion.synthesis.summary}</p>
+                          {message.discussion.synthesis.decisions.length ? (
+                            <ul>
+                              {message.discussion.synthesis.decisions.map(
+                                (item) => (
+                                  <li key={item}>{item}</li>
+                                ),
+                              )}
+                            </ul>
+                          ) : null}
+                        </article>
+                      </div>
+                    ) : null}
+                  </div>
+                </article>
+              ))
+            ) : (
+              <div className="empty-chat">
+                <p className="empty-eyebrow">Design Council AI</p>
+                <h3>选择专家，然后开始提问</h3>
+                <p>可以先描述设计问题，也可以用 + 附上截图或 PRD。</p>
+                <div className="empty-suggestions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setQuestion("请从 UX、视觉和开发成本角度评审这个方案。")
+                    }
+                  >
+                    评审方案
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setQuestion("这个设计在落地开发时有哪些风险？")
+                    }
+                  >
+                    看开发风险
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setQuestion("如果老板看这个设计，可能会挑什么问题？")
+                    }
+                  >
+                    模拟老板视角
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
 
           {error ? <p className="error-message">{error}</p> : null}
 
-          <div className="action-row">
-            <p>
-              当前：
-              {selectedExperts.map((expert) => expert.name).join("、")}
-            </p>
-            <button
-              className="primary-button"
-              disabled={isLoading || selectedExperts.length === 0}
-              type="submit"
-            >
-              {isLoading ? "生成中" : "开始讨论"}
-            </button>
-          </div>
-
-          {discussion ? (
-            <section className="result-section">
-              {discussion.note ? (
-                <p className="note-message">{discussion.note}</p>
-              ) : null}
-
-              <div className="round-list">
-                {discussion.expertRounds.map((round) => (
-                  <article className="result-card" key={round.expertId}>
-                    <div className="result-card-heading">
-                      <h3>{round.expertName}</h3>
-                      <p>{round.title}</p>
-                    </div>
-                    <div className="result-grid">
-                      <p>
-                        <strong>立场：</strong>
-                        {round.stance}
-                      </p>
-                      <p>
-                        <strong>风险：</strong>
-                        {round.concern}
-                      </p>
-                      <p>
-                        <strong>建议：</strong>
-                        {round.recommendation}
-                      </p>
-                      <p>
-                        <strong>取舍：</strong>
-                        {round.tradeoff}
-                      </p>
-                    </div>
-                  </article>
+          <div
+            className={`composer-shell ${
+              isDraggingSources ? "is-dragging" : ""
+            }`}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+          >
+            <div className="composer-drag-hint">
+              <strong>松手添加附件</strong>
+              <span>图片和文件会加入本轮对话</span>
+            </div>
+            <input
+              accept="image/*,.pdf,.doc,.docx,.md,.txt,.csv,.json"
+              className="hidden-file-input"
+              multiple
+              ref={fileInputRef}
+              type="file"
+              onChange={handleSourceInputChange}
+            />
+            {sources.length ? (
+              <div className="composer-sources">
+                {sources.map((source) => (
+                  <span className="attachment-pill" key={source.id}>
+                    <span
+                      className="attachment-thumb"
+                      style={
+                        source.previewUrl
+                          ? {
+                              backgroundImage: `url(${source.previewUrl})`,
+                            }
+                          : undefined
+                      }
+                    >
+                      {source.previewUrl ? "" : source.kind.toUpperCase()}
+                    </span>
+                    <span className="attachment-name">{source.name}</span>
+                    <button
+                      aria-label={`移除 ${source.name}`}
+                      type="button"
+                      onClick={() => removeSource(source.id)}
+                    >
+                      ×
+                    </button>
+                  </span>
                 ))}
               </div>
-
-              <article className="synthesis-card">
-                <h3>主持人综合</h3>
-                <p>{discussion.synthesis.summary}</p>
-                {discussion.synthesis.decisions.length ? (
-                  <ul>
-                    {discussion.synthesis.decisions.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                ) : null}
-              </article>
-            </section>
-          ) : null}
+            ) : null}
+            <div className="composer-row">
+              <button
+                aria-label="添加来源"
+                className="composer-add"
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                +
+              </button>
+              <textarea
+                className="composer-input"
+                placeholder="输入你想让专家圆桌讨论的问题"
+                value={question}
+                onChange={(event) => setQuestion(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+              />
+              <button
+                className="composer-send"
+                disabled={isLoading || selectedExperts.length === 0}
+                type="submit"
+              >
+                {isLoading ? "生成中" : "发送"}
+              </button>
+            </div>
+          </div>
         </section>
 
         <aside className="panel">
@@ -580,4 +847,42 @@ export default function Home() {
       </form>
     </main>
   );
+}
+
+function getSourceKind(file: File): SourceItem["kind"] {
+  if (file.type.startsWith("image/")) {
+    return "image";
+  }
+
+  if (
+    file.type.includes("pdf") ||
+    file.type.includes("word") ||
+    file.name.endsWith(".doc") ||
+    file.name.endsWith(".docx")
+  ) {
+    return "document";
+  }
+
+  if (
+    file.type.startsWith("text/") ||
+    file.name.endsWith(".md") ||
+    file.name.endsWith(".json") ||
+    file.name.endsWith(".csv")
+  ) {
+    return "text";
+  }
+
+  return "file";
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }

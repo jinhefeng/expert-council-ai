@@ -3,10 +3,17 @@ import { Expert, moderatorModes, pickExperts } from "./experts";
 export type DiscussionRequest = {
   question: string;
   projectContext?: string;
+  conversationHistory?: ConversationTurn[];
   expertIds: string[];
   customExperts?: Expert[];
   moderatorId?: string;
   provider?: "mock" | "qwen";
+};
+
+export type ConversationTurn = {
+  role: "user" | "assistant";
+  content: string;
+  sourceNames?: string[];
 };
 
 export type ExpertRound = {
@@ -42,6 +49,9 @@ export async function createDiscussion(
 ): Promise<DiscussionResponse> {
   const question = normalizeText(input.question, 4000);
   const projectContext = normalizeText(input.projectContext ?? "", 2000);
+  const conversationHistory = normalizeConversationHistory(
+    input.conversationHistory ?? [],
+  );
   const selectedExperts = resolveSelectedExperts(
     input.expertIds,
     input.customExperts,
@@ -59,6 +69,7 @@ export async function createDiscussion(
     return runQwenDiscussion({
       question,
       projectContext,
+      conversationHistory,
       selectedExperts,
       moderatorId: input.moderatorId,
     });
@@ -67,6 +78,7 @@ export async function createDiscussion(
   return createMockDiscussion({
     question,
     projectContext,
+    conversationHistory,
     selectedExperts,
     moderatorId: input.moderatorId,
     providerRequested: input.provider,
@@ -76,12 +88,14 @@ export async function createDiscussion(
 function createMockDiscussion({
   question,
   projectContext,
+  conversationHistory,
   selectedExperts,
   moderatorId,
   providerRequested,
 }: {
   question: string;
   projectContext: string;
+  conversationHistory: ConversationTurn[];
   selectedExperts: Expert[];
   moderatorId?: string;
   providerRequested?: "mock" | "qwen";
@@ -123,6 +137,7 @@ function createMockDiscussion({
     promptPreview: buildPromptPreview({
       question,
       projectContext,
+      conversationHistory,
       selectedExperts,
       moderatorName: moderator.name,
     }),
@@ -132,11 +147,13 @@ function createMockDiscussion({
 async function runQwenDiscussion({
   question,
   projectContext,
+  conversationHistory,
   selectedExperts,
   moderatorId,
 }: {
   question: string;
   projectContext: string;
+  conversationHistory: ConversationTurn[];
   selectedExperts: Expert[];
   moderatorId?: string;
 }): Promise<DiscussionResponse> {
@@ -155,7 +172,11 @@ async function runQwenDiscussion({
           },
           {
             role: "user",
-            content: buildUserPrompt(question, projectContext),
+            content: buildUserPrompt(
+              question,
+              projectContext,
+              conversationHistory,
+            ),
           },
         ],
       });
@@ -179,6 +200,7 @@ async function runQwenDiscussion({
         role: "user",
         content: [
           `主持模式：${moderator.name}`,
+          formatConversationHistory(conversationHistory),
           `问题：${question}`,
           projectContext ? `项目背景：${projectContext}` : "",
           "专家观点：",
@@ -215,6 +237,7 @@ async function runQwenDiscussion({
     promptPreview: buildPromptPreview({
       question,
       projectContext,
+      conversationHistory,
       selectedExperts,
       moderatorName: moderator.name,
     }),
@@ -269,8 +292,13 @@ function mockExpertRound(expert: Expert): ExpertRound {
   };
 }
 
-function buildUserPrompt(question: string, projectContext: string) {
+function buildUserPrompt(
+  question: string,
+  projectContext: string,
+  conversationHistory: ConversationTurn[],
+) {
   return [
+    formatConversationHistory(conversationHistory),
     projectContext ? `项目背景：${projectContext}` : "",
     `设计问题：${question}`,
     "请输出具体判断，不要只给原则。",
@@ -282,17 +310,20 @@ function buildUserPrompt(question: string, projectContext: string) {
 function buildPromptPreview({
   question,
   projectContext,
+  conversationHistory,
   selectedExperts,
   moderatorName,
 }: {
   question: string;
   projectContext: string;
+  conversationHistory: ConversationTurn[];
   selectedExperts: Expert[];
   moderatorName: string;
 }) {
   return [
     `主持人：${moderatorName}`,
     `参与专家：${selectedExperts.map((expert) => expert.name).join("、")}`,
+    formatConversationHistory(conversationHistory),
     projectContext ? `项目背景：${projectContext}` : "",
     `设计问题：${question}`,
     "请先让每位专家独立判断，再整理共识、分歧、最终决策和下一步行动。",
@@ -303,6 +334,38 @@ function buildPromptPreview({
 
 function normalizeText(value: string, maxLength: number) {
   return value.trim().slice(0, maxLength);
+}
+
+function normalizeConversationHistory(turns: ConversationTurn[]) {
+  return turns
+    .slice(-8)
+    .map((turn) => ({
+      role: turn.role,
+      content: normalizeText(turn.content, 1200),
+      sourceNames: turn.sourceNames?.slice(0, 6).map((name) =>
+        normalizeText(name, 120),
+      ),
+    }))
+    .filter((turn) => turn.content);
+}
+
+function formatConversationHistory(turns: ConversationTurn[]) {
+  if (!turns.length) {
+    return "";
+  }
+
+  return [
+    "最近对话上下文：",
+    ...turns.map((turn, index) => {
+      const speaker = turn.role === "user" ? "用户" : "专家圆桌";
+      const sourceLine = turn.sourceNames?.length
+        ? `\n附件：${turn.sourceNames.join("、")}`
+        : "";
+
+      return `${index + 1}. ${speaker}：${turn.content}${sourceLine}`;
+    }),
+    "请把当前问题理解为这段对话的延续，避免重复已经回答过的内容。",
+  ].join("\n");
 }
 
 function resolveSelectedExperts(ids: string[], customExperts: Expert[] = []) {
