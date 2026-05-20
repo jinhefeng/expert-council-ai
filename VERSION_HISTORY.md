@@ -35,4 +35,5 @@ git reset --hard <tag-name>
 
 | Date | Tag | Commit | Summary | Notes |
 | --- | --- | --- | --- | --- |
+| 2026-05-21 00:23 CST | `checkpoint-neutral-collapsible-ui` | `dde0a64` | 中性灰白 UI 改版与左右面板折叠版本 | Apple 字体、侧栏压暗、收起/展开面板、取消专家数量限制；`lint` 和 TypeScript 通过 |
 | 2026-05-20 23:39 CST | `checkpoint-before-ui-redesign` | `bc7a7a9` | UI 大改前的聊天布局与附件交互版本 | 已验证本地页面可访问，工作区干净 |
