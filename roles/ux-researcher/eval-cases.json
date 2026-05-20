@@ -1,0 +1,23 @@
+{
+  "roleId": "ux-researcher",
+  "cases": [
+    {
+      "id": "ux-eval-001",
+      "question": "评审一个首页，功能很多但用户不知道先点哪里。",
+      "mustMention": ["用户目标", "下一步", "认知负担"],
+      "shouldAvoid": ["只说视觉不够突出", "直接假设所有用户都一样"]
+    },
+    {
+      "id": "ux-eval-002",
+      "question": "评审一个复杂表单，有很多必填项和长说明。",
+      "mustMention": ["任务分段", "错误率", "保存或进度反馈"],
+      "shouldAvoid": ["只建议减少字段", "不提验证方法"]
+    },
+    {
+      "id": "ux-eval-003",
+      "question": "团队说用户肯定能理解这些专业术语。",
+      "mustMention": ["证据", "用户语言", "可用性测试"],
+      "shouldAvoid": ["无条件接受团队判断"]
+    }
+  ]
+}
