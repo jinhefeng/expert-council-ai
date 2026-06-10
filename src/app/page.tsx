@@ -77,7 +77,16 @@ export default function Home() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const chatThreadRef = useRef<HTMLElement | null>(null);
+  const scrollPositions = useRef<Record<string, number>>({});
+  const prevMeetingIdRef = useRef<string | null>(null);
 
+  const handleSwitchMeeting = (newMeetingId: string) => {
+    if (activeMeetingId && chatThreadRef.current) {
+      scrollPositions.current[activeMeetingId] = chatThreadRef.current.scrollTop;
+    }
+    setActiveMeetingId(newMeetingId);
+  };
   // 初始化加载本地组织资源与会议
   useEffect(() => {
     async function initData() {
@@ -116,7 +125,12 @@ export default function Home() {
 
       if (loadedMeetings.length > 0) {
         setMeetings(loadedMeetings);
-        setActiveMeetingId(loadedMeetings[0].id);
+        const savedMeetingId = localStorage.getItem("DC_active_meeting_id");
+        if (savedMeetingId && loadedMeetings.some(m => m.id === savedMeetingId)) {
+          setActiveMeetingId(savedMeetingId);
+        } else {
+          setActiveMeetingId(loadedMeetings[0].id);
+        }
       } else {
         // 创建初始默认会议
         const defaultMeeting: Meeting = {
@@ -153,10 +167,12 @@ export default function Home() {
     }
   }, [isControlPanelCollapsed, isLoaded]);
 
-  // 滚动到聊天底部
+  // 保存当前会议状态
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [meetings, speakingExpertId, isSynthesisPending]);
+    if (activeMeetingId) {
+      localStorage.setItem("DC_active_meeting_id", activeMeetingId);
+    }
+  }, [activeMeetingId]);
 
   // 计算属性
   const allExperts = useMemo(() => {
@@ -170,6 +186,30 @@ export default function Home() {
   const activeEngineConfig = useMemo(() => {
     return engineConfigs.find(c => c.id === activeEngineId);
   }, [engineConfigs, activeEngineId]);
+
+  // 智能滚动处理：保存/恢复滚动条，并在同一会议有新消息时自动沉底
+  const messagesLength = activeMeeting?.messages.length || 0;
+  useEffect(() => {
+    if (activeMeetingId !== prevMeetingIdRef.current) {
+      // 切换了会议，尝试恢复保存的滚动位置
+      const thread = chatThreadRef.current;
+      if (thread && activeMeetingId) {
+        // 使用 setTimeout 确保 DOM 渲染完成
+        setTimeout(() => {
+          const savedScroll = scrollPositions.current[activeMeetingId];
+          if (savedScroll !== undefined) {
+            thread.scrollTop = savedScroll;
+          } else {
+            chatEndRef.current?.scrollIntoView({ behavior: "auto" });
+          }
+        }, 0);
+      }
+    } else {
+      // 同一会议下，消息数或状态变更时，平滑滚动到底部
+      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+    prevMeetingIdRef.current = activeMeetingId || null;
+  }, [activeMeetingId, messagesLength, speakingExpertId, isSynthesisPending]);
 
   // 稳定排序缓存，避免点击时跳动
   const sortRef = useRef<{ meetingId: string | null; positions: Record<string, number> }>({
@@ -261,7 +301,7 @@ export default function Home() {
 
     await storage.saveMeeting(TENANT_ID, newMeeting);
     setMeetings(prev => [...prev, newMeeting]);
-    setActiveMeetingId(newMeeting.id);
+    handleSwitchMeeting(newMeeting.id);
   }
 
   async function handleDeleteMeeting(id: string, event: React.MouseEvent) {
@@ -272,7 +312,7 @@ export default function Home() {
     const nextMeetings = meetings.filter(m => m.id !== id);
     setMeetings(nextMeetings);
     if (activeMeetingId === id && nextMeetings.length > 0) {
-      setActiveMeetingId(nextMeetings[0].id);
+      handleSwitchMeeting(nextMeetings[0].id);
     }
   }
 
@@ -1067,7 +1107,7 @@ export default function Home() {
                     <div
                       key={meeting.id}
                       className={`meeting-item ${isActive ? "is-active" : ""}`}
-                      onClick={() => setActiveMeetingId(meeting.id)}
+                      onClick={() => handleSwitchMeeting(meeting.id)}
                     >
                       <div className="meeting-item-info">
                         <span className="meeting-item-title">{meeting.name}</span>
@@ -1265,7 +1305,7 @@ export default function Home() {
             </div>
           )}
 
-          <section className="chat-thread">
+          <section className="chat-thread" ref={chatThreadRef}>
             {activeMeeting && activeMeeting.messages.length > 0 ? (
               activeMeeting.messages.map((message) => {
                 const isUser = message.role === "user";
@@ -1289,7 +1329,7 @@ export default function Home() {
                       
                       <div className="message-content markdown-body" style={{ fontSize: "14px" }}>
                         <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
-                          {message.content}
+                          {message.content.replace(/[\s\n>]*$/, '')}
                         </ReactMarkdown>
                       </div>
 
@@ -1308,7 +1348,7 @@ export default function Home() {
 
                       {message.expertStance && (
                         <div className="assistant-result" style={{ marginTop: "10px" }}>
-                          <div className="result-card" style={{ borderLeft: "3px solid var(--amber)", borderRadius: "0 8px 8px 0" }}>
+                          <div className="result-card" style={{ borderLeft: "3px solid var(--amber)", borderRadius: "8px" }}>
                             <div className="result-grid">
                               <p><strong>立场观点：</strong>{message.expertStance.stance}</p>
                               <p><strong>关键风险：</strong>{message.expertStance.concern}</p>
@@ -1336,7 +1376,7 @@ export default function Home() {
                   {allExperts.find(e => e.id === speakingExpertId)?.name.slice(0, 2) || "AI"}
                 </div>
                 <div className="message-body">
-                  <div className="thinking-card">
+                  <div className="thinking-card" style={{ borderRadius: "8px" }}>
                     <div className="thinking-loader">
                       <strong>{allExperts.find(e => e.id === speakingExpertId)?.name}</strong> 正在审视议题
                       <div className="dot-pulse">
@@ -1357,7 +1397,7 @@ export default function Home() {
               <article className="chat-message moderator">
                 <div className="message-avatar">主持</div>
                 <div className="message-body">
-                  <div className="thinking-card" style={{ borderStyle: "solid", borderColor: "var(--amber)" }}>
+                  <div className="thinking-card" style={{ borderStyle: "solid", borderColor: "var(--amber)", borderRadius: "8px" }}>
                     <div className="thinking-loader">
                       <strong style={{ color: "var(--amber)" }}>主持人</strong> 正在汇总本轮会议纪要
                       <div className="dot-pulse">
@@ -1426,17 +1466,9 @@ export default function Home() {
             )}
 
             <div className="composer-row">
-              <button
-                aria-label="添加附件"
-                className="composer-add"
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                +
-              </button>
               <textarea
                 className="composer-input"
-                placeholder="输入你想让专家圆桌深度论证的全新议题（Command + Enter 发送）"
+                placeholder="抛出全新议题，或上传相关资料..."
                 value={question}
                 disabled={isDiscussing}
                 onChange={(e) => setQuestion(e.target.value)}
@@ -1447,25 +1479,35 @@ export default function Home() {
                   }
                 }}
               />
-              {isDiscussing ? (
+              <div className="composer-actions">
                 <button
-                  aria-label="叫停讨论"
-                  className="btn-abort"
+                  aria-label="添加附件"
+                  className="composer-add"
                   type="button"
-                  onClick={handleAbort}
+                  onClick={() => fileInputRef.current?.click()}
                 >
-                  <span style={{ fontSize: "14px" }}>■</span>
+                  +
                 </button>
-              ) : (
-                <button
-                  aria-label="召开圆桌"
-                  className="composer-send"
-                  disabled={!question.trim() || !activeMeeting || activeMeeting.expertIds.length === 0}
-                  type="submit"
-                >
-                  <span style={{ fontSize: "18px" }}>↑</span>
-                </button>
-              )}
+                {isDiscussing ? (
+                  <button
+                    aria-label="叫停讨论"
+                    className="btn-abort"
+                    type="button"
+                    onClick={handleAbort}
+                  >
+                    <span style={{ fontSize: "14px" }}>■</span>
+                  </button>
+                ) : (
+                  <button
+                    aria-label="召开圆桌"
+                    className="composer-send"
+                    disabled={!question.trim() || !activeMeeting || activeMeeting.expertIds.length === 0}
+                    type="submit"
+                  >
+                    <span style={{ fontSize: "18px" }}>↑</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </section>

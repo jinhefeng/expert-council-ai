@@ -60,7 +60,7 @@ export async function callLLM({
       model,
       messages,
       temperature,
-      max_tokens: 1500,
+      max_tokens: 4000,
     }),
   });
 
@@ -159,6 +159,7 @@ export async function getExpertTurn({
     `你关注的焦点：${expert.focus.join("、")}`,
     intensityPrompt,
     `请以第一人称（我是${expert.name}）的口吻直接输出你的发言。
+IMPORTANT: 必须全程使用中文（简体中文）进行回答！
 输出要求：
 1. 包含一段直观生动的会议发言内容（content）。
 2. 在发言的最后，必须提供一个纯 JSON 格式的结构化摘要（便于前端拆分展示），JSON 的 key 如下：
@@ -273,6 +274,7 @@ export async function getSynthesis({
   }
 
   const systemPrompt = `你是一名专业的圆桌评审主持人。你的主持风格是：${moderator.name}（${moderator.description}）。
+IMPORTANT: 必须全程使用中文（简体中文）进行回答！
 请综合本轮所有专家的讨论发言，为用户生成一份极具专业度、可执行的会议纪要。
 输出格式要求：
 你必须输出一个纯 JSON 块。不得含有任何 markdown 格式的说明文字，仅返回 JSON：
