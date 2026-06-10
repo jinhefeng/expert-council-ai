@@ -437,7 +437,7 @@ h3 {
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid var(--line-strong);
-  border-radius: 50%;
+  border-radius: 4px;
   background: var(--surface-strong);
 }
 
@@ -447,11 +447,10 @@ h3 {
 }
 
 .checkmark.is-active::after {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--surface-strong);
-  content: "";
+  content: "✓";
+  color: var(--surface-strong);
+  font-size: 13px;
+  font-weight: bold;
 }
 
 .custom-role-section,
@@ -942,14 +941,14 @@ h3 {
 }
 
 .composer-input {
-  min-height: 42px;
   max-height: 160px;
   border: 0;
   background: transparent;
   color: var(--ink);
   line-height: 1.6;
+  padding: 8px 0;
   outline: none;
-  resize: vertical;
+  resize: none;
 }
 
 .composer-input::placeholder {
@@ -957,13 +956,15 @@ h3 {
 }
 
 .composer-send {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 50%;
   background: var(--amber);
-  padding: 10px 16px;
   color: #fffefa;
-  font-size: 14px;
-  font-weight: 700;
+  padding: 0;
 }
 
 .composer-send:hover {
@@ -1299,3 +1300,346 @@ h3 {
     grid-column: 1 / -1;
   }
 }
+/* ==========================================================================
+   Antigravity Premium New Styles (Multi-Agent Roundtable Extensions)
+   ========================================================================== */
+
+/* 会议空间侧边栏 */
+.meeting-section {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px;
+}
+
+.meeting-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.meeting-header-row h2 {
+  font-size: 15px;
+  text-transform: uppercase;
+  color: var(--amber);
+  font-family: var(--mono);
+}
+
+.btn-create-meeting {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface-strong);
+  color: var(--ink);
+  transition: all 150ms ease;
+  cursor: pointer;
+}
+
+.btn-create-meeting:hover {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+  color: #684c08;
+  transform: scale(1.05);
+}
+
+.meeting-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.meeting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgb(255 254 250 / 86%);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  text-align: left;
+  transition: all 160ms ease;
+  cursor: pointer;
+}
+
+.meeting-item:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-strong);
+}
+
+.meeting-item.is-active {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.meeting-item-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.meeting-item-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+
+.meeting-item-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.meeting-item-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.meeting-item:hover .meeting-item-actions {
+  opacity: 1;
+}
+
+.meeting-item-actions button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.meeting-item-actions button:hover {
+  background: rgb(25 23 20 / 6%);
+  color: var(--ink);
+}
+
+.meeting-item-actions button.btn-delete:hover {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+/* 三栏布局重构支持 */
+.workspace-triple {
+  display: grid;
+  grid-template-columns: 240px 310px minmax(400px, 1fr) 320px;
+  gap: 14px;
+  width: min(1680px, 100%);
+  height: 100%;
+  margin: 0 auto;
+  padding: 14px 20px 20px;
+  overflow: hidden;
+  transition: all 200ms ease;
+}
+
+.workspace-triple.is-sidebar-collapsed {
+  grid-template-columns: 58px 310px minmax(400px, 1fr) 320px;
+}
+
+.workspace-triple.is-control-collapsed {
+  grid-template-columns: 240px 310px minmax(400px, 1fr) 58px;
+}
+
+.workspace-triple.is-sidebar-collapsed.is-control-collapsed {
+  grid-template-columns: 58px 310px minmax(400px, 1fr) 58px;
+}
+
+/* 呼吸灯 */
+@keyframes speaking-glow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(184, 134, 11, 0.4);
+    border-color: var(--amber);
+  }
+  50% {
+    box-shadow: 0 0 12px 4px rgba(184, 134, 11, 0.2);
+    border-color: #d8a018;
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(184, 134, 11, 0.4);
+    border-color: var(--amber);
+  }
+}
+
+.role-card.is-speaking {
+  animation: speaking-glow 2s infinite ease-in-out;
+  background: var(--amber-soft);
+  transform: translateY(-2px);
+}
+
+.speaking-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--amber);
+  font-weight: 700;
+  animation: blink 1.5s infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+/* 辩论强度色阶标示 */
+.intensity-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.intensity-badge.lvl-1,
+.intensity-badge.lvl-2 {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.intensity-badge.lvl-3 {
+  background: var(--amber-soft);
+  color: #684c08;
+}
+
+.intensity-badge.lvl-4,
+.intensity-badge.lvl-5 {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+/* 叫停按钮与加载框 */
+.btn-abort {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--red);
+  background: var(--red-soft);
+  color: var(--red);
+  border-radius: 50%;
+  padding: 0;
+  transition: all 150ms ease;
+  cursor: pointer;
+}
+
+.btn-abort:hover {
+  background: var(--red);
+  color: white;
+  transform: scale(1.02);
+}
+
+/* 正在思考中 loader */
+.thinking-card {
+  border: 1px dashed var(--line-strong);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: pulse-border 1.8s infinite ease-in-out;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: var(--line-strong); }
+  50% { border-color: var(--amber); }
+}
+
+.thinking-loader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.dot-pulse {
+  display: flex;
+  gap: 4px;
+}
+
+.dot-pulse span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: dot-jump 1.4s infinite ease-in-out both;
+}
+
+.dot-pulse span:nth-child(1) { animation-delay: -0.32s; }
+.dot-pulse span:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes dot-jump {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+
+/* 组织级模型配置面板 */
+.engine-config-btn-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.btn-small-action {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.btn-small-action:hover {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.btn-small-action.active {
+  background: var(--amber);
+  color: white;
+  border-color: var(--amber);
+}
+
+/* 强度调节组件 */
+.intensity-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.intensity-selector input[type="range"] {
+  flex: 1;
+  accent-color: var(--amber);
+}
+
+.intensity-selector span {
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 24px;
+  text-align: right;
+}
+
+/* 呼起模态框底色 */
+.modal-backdrop {
+  z-index: 1000;
+}
+

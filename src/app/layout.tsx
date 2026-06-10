@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Design Council AI",
-  description: "AI expert council for design decisions.",
+  title: "Expert Council AI",
+  description: "AI experts discuss and evaluate solutions.",
 };
 
 export default function RootLayout({
