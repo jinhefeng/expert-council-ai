@@ -172,7 +172,7 @@ h3 {
 
 .workspace {
   display: grid;
-  grid-template-columns: 310px minmax(420px, 1fr) 330px;
+  grid-template-columns: 310px minmax(420px, 1fr);
   gap: 14px;
   width: min(1440px, 100%);
   min-height: 0;
@@ -184,15 +184,7 @@ h3 {
 }
 
 .workspace.is-role-collapsed {
-  grid-template-columns: 58px minmax(420px, 1fr) 330px;
-}
-
-.workspace.is-control-collapsed {
-  grid-template-columns: 310px minmax(420px, 1fr) 58px;
-}
-
-.workspace.is-role-collapsed.is-control-collapsed {
-  grid-template-columns: 58px minmax(420px, 1fr) 58px;
+  grid-template-columns: 58px minmax(420px, 1fr);
 }
 
 .panel {
@@ -576,20 +568,25 @@ h3 {
 
 .chat-message {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 34px minmax(0, 1fr) 34px;
   gap: 12px;
 }
 
-.chat-message.user {
-  grid-template-columns: minmax(0, 1fr) 34px;
+.chat-message .message-avatar {
+  grid-column: 1;
 }
 
-.chat-message.user .message-avatar {
+.chat-message .message-body {
   grid-column: 2;
 }
 
+.chat-message.user .message-avatar {
+  grid-column: 3;
+  grid-row: 1;
+}
+
 .chat-message.user .message-body {
-  grid-column: 1;
+  grid-column: 2;
   grid-row: 1;
 }
 
@@ -624,7 +621,7 @@ h3 {
 }
 
 .message-content {
-  max-width: 760px;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-strong);
@@ -636,6 +633,7 @@ h3 {
 
 .chat-message.user .message-content {
   margin-left: auto;
+  width: fit-content;
   border-color: var(--ink);
   background: var(--ink);
   color: var(--surface);
@@ -922,7 +920,28 @@ h3 {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 4px;
+  margin-top: 10px;
+}
+
+.toolbar-select {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 4px 20px 4px 8px;
+  cursor: pointer;
+  outline: none;
+  background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2214%22%20height%3D%2214%22%20viewBox%3D%220%200%2024%2024%20fill%3D%22none%22%20stroke%3D%22%238a8374%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolyline%20points%3D%226%209%2012%2015%2018%209%22%3E%3C%2Fpolyline%3E%3C%2Fsvg%3E");
+  background-repeat: no-repeat;
+  background-position: right 4px center;
+  transition: all 0.2s;
+}
+
+.toolbar-select:hover {
+  background-color: rgb(0 0 0 / 4%);
+  color: var(--ink);
 }
 
 .composer-add {
@@ -1443,7 +1462,7 @@ h3 {
 /* 三栏布局重构支持 */
 .workspace-triple {
   display: grid;
-  grid-template-columns: 240px 310px minmax(400px, 1fr) 320px;
+  grid-template-columns: 240px minmax(400px, 1fr) 310px;
   gap: 14px;
   width: min(1680px, 100%);
   height: 100%;
@@ -1453,16 +1472,20 @@ h3 {
   transition: all 200ms ease;
 }
 
+.workspace-triple > .side-panel:first-of-type {
+  order: 1;
+}
+
+.workspace-triple > .chat-panel {
+  order: 2;
+}
+
+.workspace-triple > .role-panel {
+  order: 3;
+}
+
 .workspace-triple.is-sidebar-collapsed {
-  grid-template-columns: 58px 310px minmax(400px, 1fr) 320px;
-}
-
-.workspace-triple.is-control-collapsed {
-  grid-template-columns: 240px 310px minmax(400px, 1fr) 58px;
-}
-
-.workspace-triple.is-sidebar-collapsed.is-control-collapsed {
-  grid-template-columns: 58px 310px minmax(400px, 1fr) 58px;
+  grid-template-columns: 58px minmax(400px, 1fr) 310px;
 }
 
 /* 呼吸灯 */

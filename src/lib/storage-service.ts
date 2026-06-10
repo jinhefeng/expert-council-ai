@@ -1,4 +1,4 @@
-import { Expert, LLMEngineConfig, Meeting } from "./types";
+import { Expert, LLMEngineConfig, Meeting, UserProfile } from "./types";
 
 export interface StorageService {
   // 会议管理
@@ -18,12 +18,17 @@ export interface StorageService {
   // 系统专家覆写配置
   getSystemExpertsOverrides(tenantId: string): Promise<Partial<Expert>[]>;
   saveSystemExpertsOverrides(tenantId: string, overrides: Partial<Expert>[]): Promise<void>;
+
+  // 当前用户配置
+  getUserProfile(tenantId: string): Promise<UserProfile>;
+  saveUserProfile(tenantId: string, profile: UserProfile): Promise<void>;
 }
 
 const MEETINGS_KEY = "design-council-meetings";
 const CUSTOM_EXPERTS_KEY = "design-council-custom-experts";
 const ENGINE_CONFIGS_KEY = "design-council-engine-configs";
 const SYSTEM_EXPERTS_OVERRIDES_KEY = "design-council-system-experts-overrides";
+const USER_PROFILE_KEY = "design-council-user-profile";
 
 export class LocalStorageService implements StorageService {
   private isClient(): boolean {
@@ -178,9 +183,33 @@ export class LocalStorageService implements StorageService {
       const newOverrides = overrides.map(o => ({ ...o, tenantId }));
       allOverrides.push(...newOverrides);
 
-      window.localStorage.setItem(SYSTEM_EXPERTS_OVERRIDES_KEY, JSON.stringify(allOverrides));
+      window.localStorage.setItem(SYSTEM_EXPERTS_OVERRIDES_KEY, JSON.stringify(overrides));
     } catch (e) {
-      console.error("Failed to save system expert overrides", e);
+      console.error("Failed to save system experts overrides", e);
+    }
+  }
+
+  async getUserProfile(tenantId: string): Promise<UserProfile> {
+    if (!this.isClient()) return { name: "产品经理", title: "需求提出人" };
+    try {
+      const data = window.localStorage.getItem(USER_PROFILE_KEY);
+      if (!data) return { name: "产品经理", title: "需求提出人" };
+      return JSON.parse(data) as UserProfile;
+    } catch (e) {
+      console.error("Failed to load user profile", e);
+      return { name: "产品经理", title: "需求提出人" };
+    }
+  }
+
+  async saveUserProfile(tenantId: string, profile: UserProfile): Promise<void> {
+    if (!this.isClient()) return;
+    try {
+      window.localStorage.setItem(USER_PROFILE_KEY, JSON.stringify({
+        ...profile,
+        tenantId
+      }));
+    } catch (e) {
+      console.error("Failed to save user profile", e);
     }
   }
 }

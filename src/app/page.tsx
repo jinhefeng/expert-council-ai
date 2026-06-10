@@ -20,6 +20,7 @@ import {
   Meeting,
   ChatMessage,
   SourceItem,
+  UserProfile
 } from "@/lib/types";
 
 const TENANT_ID = "default-org";
@@ -28,13 +29,12 @@ export default function Home() {
   // 存储服务实例
   const storage = useMemo(() => new LocalStorageService(), []);
 
-
-
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [activeMeetingId, setActiveMeetingId] = useState<string>("");
   const [systemExperts, setSystemExperts] = useState<Expert[]>(defaultExperts);
   const [customExperts, setCustomExperts] = useState<Expert[]>([]);
   const [engineConfigs, setEngineConfigs] = useState<LLMEngineConfig[]>([]);
+  const [userProfile, setUserProfile] = useState<UserProfile>({ name: "产品经理", title: "需求提出人" });
   
   // 活动的模型引擎 ID：真刀真枪下默认使用系统环境内置的 system-env
   const [activeEngineId, setActiveEngineId] = useState<string>("system-env");
@@ -54,7 +54,6 @@ export default function Home() {
 
   // 面板展开/收起
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [isControlPanelCollapsed, setIsControlPanelCollapsed] = useState(false);
 
   // 弹窗与表单配置状态
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
@@ -80,6 +79,14 @@ export default function Home() {
   const chatThreadRef = useRef<HTMLElement | null>(null);
   const scrollPositions = useRef<Record<string, number>>({});
   const prevMeetingIdRef = useRef<string | null>(null);
+  const isAutoScrollEnabled = useRef<boolean>(true);
+
+  const handleThreadScroll = () => {
+    if (!chatThreadRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = chatThreadRef.current;
+    // 如果滚动条距离底部小于 50px，视为在最底部，开启自动滚动
+    isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 50;
+  };
 
   const handleSwitchMeeting = (newMeetingId: string) => {
     if (activeMeetingId && chatThreadRef.current) {
@@ -94,10 +101,12 @@ export default function Home() {
       const loadedExperts = await storage.getCustomExperts(TENANT_ID);
       const loadedConfigs = await storage.getEngineConfigs(TENANT_ID);
       const systemOverrides = await storage.getSystemExpertsOverrides(TENANT_ID);
+      const profile = await storage.getUserProfile(TENANT_ID);
 
       setSystemExperts(mergeSystemExperts(defaultExperts, systemOverrides));
       setCustomExperts(loadedExperts);
       setEngineConfigs(loadedConfigs);
+      setUserProfile(profile);
 
       // 决定默认的模型引擎选择
       const activeConfig = loadedConfigs.find(c => c.isActive);
@@ -110,9 +119,7 @@ export default function Home() {
 
       // 从 localStorage 加载面板折叠状态
       const savedSidebar = localStorage.getItem("DC_sidebar_collapsed");
-      const savedControl = localStorage.getItem("DC_control_collapsed");
       if (savedSidebar === "true") setIsSidebarCollapsed(true);
-      if (savedControl === "true") setIsControlPanelCollapsed(true);
       
       const savedActivations = localStorage.getItem("DC_expert_activations");
       if (savedActivations) {
@@ -161,12 +168,6 @@ export default function Home() {
     }
   }, [isSidebarCollapsed, isLoaded]);
 
-  useEffect(() => {
-    if (isLoaded) {
-      localStorage.setItem("DC_control_collapsed", String(isControlPanelCollapsed));
-    }
-  }, [isControlPanelCollapsed, isLoaded]);
-
   // 保存当前会议状态
   useEffect(() => {
     if (activeMeetingId) {
@@ -176,8 +177,10 @@ export default function Home() {
 
   // 计算属性
   const allExperts = useMemo(() => {
-    return [...systemExperts, ...customExperts];
-  }, [systemExperts, customExperts]);
+    // 过滤出系统专家、全局级专家(!meetingId) 以及当前会议专属专家
+    const availableCustom = customExperts.filter(e => !e.meetingId || e.meetingId === activeMeetingId);
+    return [...systemExperts, ...availableCustom];
+  }, [systemExperts, customExperts, activeMeetingId]);
 
   const activeMeeting = useMemo(() => {
     return meetings.find(m => m.id === activeMeetingId);
@@ -188,7 +191,6 @@ export default function Home() {
   }, [engineConfigs, activeEngineId]);
 
   // 智能滚动处理：保存/恢复滚动条，并在同一会议有新消息时自动沉底
-  const messagesLength = activeMeeting?.messages.length || 0;
   useEffect(() => {
     if (activeMeetingId !== prevMeetingIdRef.current) {
       // 切换了会议，尝试恢复保存的滚动位置
@@ -199,17 +201,23 @@ export default function Home() {
           const savedScroll = scrollPositions.current[activeMeetingId];
           if (savedScroll !== undefined) {
             thread.scrollTop = savedScroll;
+            const { scrollTop, scrollHeight, clientHeight } = thread;
+            isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 50;
           } else {
             chatEndRef.current?.scrollIntoView({ behavior: "auto" });
+            isAutoScrollEnabled.current = true;
           }
         }, 0);
       }
     } else {
-      // 同一会议下，消息数或状态变更时，平滑滚动到底部
-      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      // 同一会议下，如果有新内容生成且允许自动滚动，则滚动到底部
+      if (isAutoScrollEnabled.current) {
+        // 使用 auto 而不是 smooth 可以在流式输出时避免画面抖动冲突
+        chatEndRef.current?.scrollIntoView({ behavior: "auto" });
+      }
     }
     prevMeetingIdRef.current = activeMeetingId || null;
-  }, [activeMeetingId, messagesLength, speakingExpertId, isSynthesisPending]);
+  }, [activeMeetingId, activeMeeting?.messages, speakingExpertId, isSynthesisPending]);
 
   // 稳定排序缓存，避免点击时跳动
   const sortRef = useRef<{ meetingId: string | null; positions: Record<string, number> }>({
@@ -322,6 +330,10 @@ export default function Home() {
   }
 
   async function handleSaveCustomExpert(newExpert: Expert) {
+    if (activeMeetingId) {
+      newExpert.meetingId = activeMeetingId;
+    }
+    
     await storage.saveCustomExpert(TENANT_ID, newExpert);
     setCustomExperts(prev => [...prev, newExpert]);
     
@@ -645,7 +657,8 @@ export default function Home() {
       meetingId: activeMeeting.id,
       tenantId: TENANT_ID,
       role: "user",
-      senderName: "用户",
+      senderName: userProfile.name,
+      senderTitle: userProfile.title,
       content: userQuestion,
       sources: [...sources],
       createdAt: Date.now(),
@@ -1056,14 +1069,13 @@ export default function Home() {
         </div>
       </header>
 
-      <form
-        className={`workspace-triple ${
-          isSidebarCollapsed ? "is-sidebar-collapsed" : ""
-        } ${
-          isControlPanelCollapsed ? "is-control-collapsed" : ""
-        }`}
-        onSubmit={handleSubmitDiscussion}
-      >
+      <main className="app-main">
+        <form
+          className={`workspace-triple ${
+            isSidebarCollapsed ? "is-sidebar-collapsed" : ""
+          }`.trim()}
+          onSubmit={(e) => void handleSubmitDiscussion(e)}
+        >
         {/* 左侧栏一：会议列表空间 */}
         <section className={`panel side-panel ${isSidebarCollapsed ? "is-collapsed" : ""}`}>
           {isSidebarCollapsed ? (
@@ -1142,7 +1154,9 @@ export default function Home() {
                 className="btn-create-meeting"
                 type="button"
                 onClick={openCustomModal}
-                title="新建组织智能体"
+                title={activeMeetingId ? "新建会议专属智能体" : "请先选择或创建会议"}
+                disabled={!activeMeetingId}
+                style={{ opacity: !activeMeetingId ? 0.5 : 1, cursor: !activeMeetingId ? "not-allowed" : "pointer" }}
               >
                 +
               </button>
@@ -1240,7 +1254,7 @@ export default function Home() {
                         )}
                       </div>
                       
-                      {expert.isCustom && (
+                      {expert.isCustom && expert.meetingId && (
                         <button
                           className="text-button"
                           type="button"
@@ -1305,7 +1319,7 @@ export default function Home() {
             </div>
           )}
 
-          <section className="chat-thread" ref={chatThreadRef}>
+          <section className="chat-thread" ref={chatThreadRef} onScroll={handleThreadScroll}>
             {activeMeeting && activeMeeting.messages.length > 0 ? (
               activeMeeting.messages.map((message) => {
                 const isUser = message.role === "user";
@@ -1321,9 +1335,14 @@ export default function Home() {
                       {isUser ? "你" : isMod ? "主持" : message.senderName.slice(0, 2)}
                     </div>
                     <div className="message-body">
-                      {(isExp || isMod) && (
-                        <p style={{ fontSize: "11px", color: "var(--muted)", marginBottom: "4px" }}>
-                          {message.senderName} · {message.senderTitle || "总监"}
+                      {(isExp || isMod || isUser) && (
+                        <p style={{ 
+                          fontSize: "11px", 
+                          color: "var(--muted)", 
+                          marginBottom: "4px",
+                          textAlign: isUser ? "right" : "left"
+                        }}>
+                          {isUser ? userProfile.name : message.senderName} · {isUser ? userProfile.title : (message.senderTitle || "总监")}
                         </p>
                       )}
                       
@@ -1480,14 +1499,67 @@ export default function Home() {
                 }}
               />
               <div className="composer-actions">
-                <button
-                  aria-label="添加附件"
-                  className="composer-add"
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  +
-                </button>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button
+                    aria-label="添加附件"
+                    className="composer-add"
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    +
+                  </button>
+
+                  {/* 内嵌的会议设置项 (蓝框位置) */}
+                  {activeMeeting && (
+                    <div style={{ display: "flex", gap: "4px" }}>
+                      <select 
+                        className="toolbar-select" 
+                        value={activeEngineId} 
+                        onChange={(e) => void handleSelectEngine(e.target.value)}
+                        title="选择模型引擎"
+                      >
+                        <option value="system-env">系统模型</option>
+                        {engineConfigs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+
+                      <select 
+                        className="toolbar-select"
+                        value={activeMeeting.turnOrderMode}
+                        onChange={(e) => void updateActiveMeeting({ turnOrderMode: e.target.value as any })}
+                        title="发言顺序"
+                      >
+                        <option value="sequential">顺序发言</option>
+                        <option value="relevance">动态指派</option>
+                        <option value="manual">手动点名</option>
+                      </select>
+
+                      <select
+                        className="toolbar-select"
+                        value={activeMeeting.globalDebateIntensity}
+                        onChange={(e) => void updateActiveMeeting({ globalDebateIntensity: Number(e.target.value) })}
+                        title="对抗强度"
+                      >
+                        <option value="1">火力: 1 (温和)</option>
+                        <option value="2">火力: 2 (建设)</option>
+                        <option value="3">火力: 3 (客观)</option>
+                        <option value="4">火力: 4 (尖锐)</option>
+                        <option value="5">火力: 5 (极限)</option>
+                      </select>
+
+                      <select
+                        className="toolbar-select"
+                        value={activeMeeting.moderatorId}
+                        onChange={(e) => void updateActiveMeeting({ moderatorId: e.target.value })}
+                        title="主持风格"
+                      >
+                        {moderatorModes.map(m => (
+                          <option key={m.id} value={m.id}>主持: {m.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
                 {isDiscussing ? (
                   <button
                     aria-label="叫停讨论"
@@ -1512,124 +1584,7 @@ export default function Home() {
           </div>
         </section>
 
-        {/* 右侧栏：控制面板和统一模型引擎配置 */}
-        <section className={`panel side-panel control-panel ${isControlPanelCollapsed ? "is-collapsed" : ""}`}>
-          {isControlPanelCollapsed ? (
-            <button
-              aria-label="展开会议控制"
-              className="panel-rail"
-              type="button"
-              onClick={() => setIsControlPanelCollapsed(false)}
-            >
-              <span className="rail-count" style={{ border: "none", background: "transparent", fontSize: "16px" }}>⚙️</span>
-              <span>会议控制</span>
-              <span aria-hidden="true" style={{ transform: "rotate(-90deg)", display: "inline-block" }}>‹</span>
-            </button>
-          ) : (
-            <>
-              <div className="panel-heading side-panel-heading">
-                <h2>会议控制</h2>
-                <button
-                  aria-label="收起设置"
-                  className="panel-toggle-button"
-                  type="button"
-                  onClick={() => setIsControlPanelCollapsed(true)}
-                >
-                  ›
-                </button>
-              </div>
 
-              {/* 大模型切换 */}
-              <div className="control-block" style={{ borderTop: "none", paddingTop: 0 }}>
-                <p className="control-label">当前运行模型</p>
-                <div style={{ marginTop: "8px" }}>
-                  <select
-                    className="ghost-button"
-                    style={{ width: "100%", padding: "6px 10px", borderRadius: "6px", border: "1px solid var(--line)", background: "var(--surface)", color: "var(--ink)", outline: "none", fontSize: "13px", cursor: "pointer" }}
-                    value={activeEngineId}
-                    onChange={(e) => void handleSelectEngine(e.target.value)}
-                  >
-                    <option value="system-env">系统默认大模型 (环境变量)</option>
-                    {engineConfigs.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* 发言模式 */}
-              {activeMeeting && (
-                <div className="control-block">
-                  <p className="control-label">发言顺序管理</p>
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "8px" }}>
-                    <button
-                      className={`btn-small-action ${activeMeeting.turnOrderMode === "sequential" ? "active" : ""}`}
-                      type="button"
-                      onClick={() => void updateActiveMeeting({ turnOrderMode: "sequential" })}
-                    >
-                      Sequential (自动顺序发言)
-                    </button>
-                    <button
-                      className={`btn-small-action ${activeMeeting.turnOrderMode === "relevance" ? "active" : ""}`}
-                      type="button"
-                      onClick={() => void updateActiveMeeting({ turnOrderMode: "relevance" })}
-                    >
-                      Relevance (AI 动态相关指派)
-                    </button>
-                    <button
-                      className={`btn-small-action ${activeMeeting.turnOrderMode === "manual" ? "active" : ""}`}
-                      type="button"
-                      onClick={() => void updateActiveMeeting({ turnOrderMode: "manual" })}
-                    >
-                      Manual (主持人手动点名)
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* 对抗强度 */}
-              {activeMeeting && (
-                <div className="control-block">
-                  <p className="control-label">会议全局对抗激烈度</p>
-                  <label className="intensity-selector">
-                    <input
-                      type="range"
-                      min="1"
-                      max="5"
-                      disabled={isDiscussing}
-                      value={activeMeeting.globalDebateIntensity}
-                      onChange={(e) => void updateActiveMeeting({ globalDebateIntensity: Number(e.target.value) })}
-                    />
-                    <span style={{ fontSize: "14px" }}>{activeMeeting.globalDebateIntensity}</span>
-                  </label>
-                  <span style={{ fontSize: "11px", color: "var(--muted)", display: "block", marginTop: "4px" }}>
-                    强度越高，专家之间观点碰撞与漏洞攻击的尖锐度越强。
-                  </span>
-                </div>
-              )}
-
-              {/* 主持风格 */}
-              {activeMeeting && (
-                <div className="control-block">
-                  <p className="control-label">主持人风格模式</p>
-                  <div className="moderator-list" style={{ marginTop: "12px" }}>
-                    {moderatorModes.map((mode) => (
-                      <button
-                        className={`moderator-card ${activeMeeting.moderatorId === mode.id ? "is-selected" : ""}`}
-                        key={mode.id}
-                        type="button"
-                        onClick={() => void updateActiveMeeting({ moderatorId: mode.id })}
-                      >
-                        <p>{mode.name}</p>
-                        <span>{mode.description}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </section>
       </form>
 
         {/* 弹窗：新建自定义智能体 (已抽取为独立组件) */}
@@ -1757,6 +1712,7 @@ export default function Home() {
             </section>
           </div>
         )}
+      </main>
     </main>
   );
 }

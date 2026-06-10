@@ -70,8 +70,10 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave }: Expe
           </button>
         </div>
         
-        {/* 这里使用确定的 maxHeight 配合 overflowY 实现防溢出 */}
-        <form onSubmit={handleSubmit} style={{ padding: "0 24px", maxHeight: "calc(100vh - 160px)", overflowY: "auto" }}>
+        {/* 使用 Flex 布局使得按钮栏始终在底部固定，表单内容在中间滚动 */}
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 160px)" }}>
+          
+          <div style={{ padding: "0 24px", overflowY: "auto", flex: 1 }}>
           
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
             <label className="compact-field">
@@ -118,7 +120,9 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave }: Expe
 
           {error && <p style={{ color: "var(--red)", fontSize: "13px", marginTop: "12px" }}>{error}</p>}
 
-          <div className="modal-actions" style={{ padding: "24px 0", marginTop: "8px" }}>
+          </div>
+
+          <div className="modal-actions" style={{ padding: "16px 24px", borderTop: "1px solid var(--line)", background: "var(--surface)" }}>
             <button type="button" className="ghost-button" onClick={onClose}>取消</button>
             <button type="submit" className="primary-button">保存智能体</button>
           </div>

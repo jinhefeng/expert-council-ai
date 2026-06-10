@@ -3,6 +3,11 @@ export interface TenantScoped {
   userId?: string;   // 预留用户隔离字段
 }
 
+export type UserProfile = TenantScoped & {
+  name: string;
+  title: string;
+};
+
 export type Expert = TenantScoped & {
   id: string;
   name: string;
@@ -14,6 +19,7 @@ export type Expert = TenantScoped & {
   debateIntensity: number; // 个人辩论强度 (1-5)
   isCustom?: boolean;      // 是否为自定义智能体
   isHidden?: boolean;      // 是否在列表中被软删除（隐藏）
+  meetingId?: string;      // 若为空，则为后台添加的全局自定义智能体；若有值，则为该会议专属
 };
 
 export type LLMEngineConfig = TenantScoped & {

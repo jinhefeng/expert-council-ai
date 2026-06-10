@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { LocalStorageService } from "@/lib/storage-service";
-import { Expert, LLMEngineConfig } from "@/lib/types";
+import { Expert, LLMEngineConfig, UserProfile } from "@/lib/types";
 import { experts as defaultExperts, mergeSystemExperts } from "@/lib/experts";
 import { ExpertModal } from "@/components/ExpertModal";
 
@@ -15,6 +15,7 @@ export default function AdminPage() {
   const [engineConfigs, setEngineConfigs] = useState<LLMEngineConfig[]>([]);
   const [systemOverrides, setSystemOverrides] = useState<Partial<Expert>[]>([]);
   const [customExperts, setCustomExperts] = useState<Expert[]>([]);
+  const [userProfile, setUserProfile] = useState<UserProfile>({ name: "产品经理", title: "需求提出人" });
   
   // 大模型表单 Modal
   const [isEngineModalOpen, setIsEngineModalOpen] = useState(false);
@@ -44,13 +45,26 @@ export default function AdminPage() {
     async function load() {
       setEngineConfigs(await storage.getEngineConfigs(TENANT_ID));
       setSystemOverrides(await storage.getSystemExpertsOverrides(TENANT_ID));
-      setCustomExperts(await storage.getCustomExperts(TENANT_ID));
+      const allCustom = await storage.getCustomExperts(TENANT_ID);
+      setCustomExperts(allCustom.filter(e => !e.meetingId));
+      setUserProfile(await storage.getUserProfile(TENANT_ID));
     }
     void load();
   }, [storage]);
 
   // 计算合并后的系统专家
   const systemExperts = useMemo(() => mergeSystemExperts(defaultExperts, systemOverrides), [systemOverrides]);
+
+  // --- 用户配置管理 ---
+  async function handleSaveUserProfile(e: React.FormEvent) {
+    e.preventDefault();
+    if (!userProfile.name || !userProfile.title) {
+      alert("请填写完整的姓名和岗位");
+      return;
+    }
+    await storage.saveUserProfile(TENANT_ID, userProfile);
+    alert("保存成功！");
+  }
 
   // --- 大模型管理 ---
   async function handleSaveEngine(e: React.FormEvent) {
@@ -236,6 +250,27 @@ export default function AdminPage() {
 
       <div className="workspace" style={{ display: "block", maxWidth: "860px", margin: "40px auto", paddingBottom: "100px", background: "transparent", border: "none", height: "auto", overflow: "visible" }}>
         
+        {/* 用户档案管理 */}
+        <section className="panel" style={{ marginBottom: "32px", padding: "24px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
+            <div>
+              <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>当前用户档案</h2>
+              <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>配置您的称呼与头衔，这将会显示在您的提问气泡上方。</p>
+            </div>
+          </div>
+          <form onSubmit={handleSaveUserProfile} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: "16px", alignItems: "end" }}>
+            <label className="compact-field" style={{ marginBottom: 0 }}>
+              <span style={{ marginBottom: "6px", display: "block", fontSize: "13px", fontWeight: 600 }}>姓名</span>
+              <input required placeholder="如：张三" value={userProfile.name} onChange={e => setUserProfile({ ...userProfile, name: e.target.value })} />
+            </label>
+            <label className="compact-field" style={{ marginBottom: 0 }}>
+              <span style={{ marginBottom: "6px", display: "block", fontSize: "13px", fontWeight: 600 }}>岗位 / 头衔</span>
+              <input required placeholder="如：产品经理" value={userProfile.title} onChange={e => setUserProfile({ ...userProfile, title: e.target.value })} />
+            </label>
+            <button type="submit" className="primary-button">保存配置</button>
+          </form>
+        </section>
+
         {/* 大模型管理 */}
         <section className="panel" style={{ marginBottom: "32px", padding: "24px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
