@@ -150,7 +150,7 @@ export default function AdminPage() {
             <div className="brand-mark">EC</div>
             <div>
               <p className="eyebrow">Expert Council AI</p>
-              <h1>组织级智能体中心后台</h1>
+              <h1>智能体圆桌会议中心后台</h1>
             </div>
           </div>
           <div className="status-group">

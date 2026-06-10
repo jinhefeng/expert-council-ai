@@ -963,6 +963,72 @@ export default function Home() {
     return `${(size / 1024 / 1024).toFixed(1)} MB`;
   }
 
+  const handleExportToHTML = () => {
+    if (!activeMeeting || activeMeeting.messages.length === 0) return;
+
+    const chatContainer = document.querySelector('.chat-thread');
+    if (!chatContainer) return;
+
+    let styleContent = '';
+    for (const sheet of document.styleSheets) {
+      try {
+        for (const rule of sheet.cssRules) {
+          styleContent += rule.cssText;
+        }
+      } catch (e) {
+        // Ignore cross-origin stylesheets
+      }
+    }
+    
+    document.querySelectorAll('style').forEach(s => {
+      styleContent += s.innerHTML;
+    });
+
+    const htmlContent = `
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>${activeMeeting.name} - 会议记录</title>
+<style>
+  /* 注入页面的所有 CSS 以保证完美复刻 */
+  ${styleContent}
+  
+  /* 基础包裹与视图调整 */
+  html, body { height: auto !important; overflow: auto !important; }
+  body { background: var(--surface-subtle, #f5f5f5); margin: 0; padding: 40px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .export-container { max-width: 900px; margin: 0 auto; background: var(--surface, #fff); border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); padding: 40px; }
+  .export-header { border-bottom: 1px solid var(--line, #eee); padding-bottom: 20px; margin-bottom: 30px; }
+  .export-header h1 { margin: 0 0 10px 0; font-size: 24px; color: var(--ink, #1a1a1a); }
+  .export-header p { color: var(--muted, #666); margin: 0; font-size: 14px; }
+  
+  /* 确保聊天容器在导出视图中正常显示 */
+  .chat-thread { height: auto !important; overflow: visible !important; padding: 0 !important; }
+</style>
+</head>
+<body>
+<div class="export-container">
+  <div class="export-header">
+    <h1>${activeMeeting.name}</h1>
+    <p>导出时间: ${new Date().toLocaleString()}</p>
+  </div>
+  <div class="chat-thread">
+    ${chatContainer.innerHTML}
+  </div>
+</div>
+</body>
+</html>
+    `;
+
+    const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${activeMeeting.name}-${new Date().toISOString().slice(0,10)}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -973,7 +1039,7 @@ export default function Home() {
             </div>
             <div>
               <p className="eyebrow">Expert Council AI - Organization Level</p>
-              <h1>组织级 AI 专家圆桌会议中心</h1>
+              <h1>智能体圆桌会议中心</h1>
             </div>
           </div>
           <div className="status-group">
@@ -1193,25 +1259,42 @@ export default function Home() {
 
         {/* 中间栏：会议室讨论现场 */}
         <section className="panel discussion-panel chat-panel">
-          <div className="discussion-heading">
+          <div className="discussion-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ minWidth: 0, flex: 1 }}>
               <span className="eyebrow" style={{ display: "block" }}>当前会议室</span>
               <h2 style={{ fontSize: "20px", fontWeight: "700", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                 {activeMeeting ? activeMeeting.name : "载入中..."}
               </h2>
             </div>
-            
-            {/* 点名模式下，如果专家发过言但还未总结，允许手动一键总结 */}
-            {activeMeeting?.turnOrderMode === "manual" && !isDiscussing && activeMeeting.messages.length > 0 && (
-              <button
-                className="btn-small-action"
-                type="button"
-                onClick={handleManualSynthesize}
-                style={{ marginRight: "10px", borderColor: "var(--amber)", color: "var(--amber)" }}
-              >
-                📝 总结会议意见
-              </button>
-            )}
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              {/* 点名模式下，如果专家发过言但还未总结，允许手动一键总结 */}
+              {activeMeeting?.turnOrderMode === "manual" && !isDiscussing && activeMeeting.messages.length > 0 && (
+                <button
+                  className="btn-small-action"
+                  type="button"
+                  onClick={handleManualSynthesize}
+                  style={{ borderColor: "var(--amber)", color: "var(--amber)" }}
+                >
+                  📝 总结会议意见
+                </button>
+              )}
+              
+              {/* 导出按钮 */}
+              {activeMeeting && activeMeeting.messages.length > 0 && (
+                <button
+                  className="icon-button"
+                  type="button"
+                  onClick={handleExportToHTML}
+                  title="导出会议记录为 HTML"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                </button>
+              )}
+            </div>
           </div>
 
           {/* 真实模式下，若未配大模型引擎，展示全局警告条并引导 */}
@@ -1488,7 +1571,7 @@ export default function Home() {
 
               {/* 对抗强度 */}
               {activeMeeting && (
-                <div className="control-block" style={{ borderBottom: "1px solid var(--line)", paddingBottom: "14px", marginTop: "14px" }}>
+                <div className="control-block">
                   <p className="control-label">会议全局对抗激烈度</p>
                   <label className="intensity-selector">
                     <input
@@ -1509,9 +1592,9 @@ export default function Home() {
 
               {/* 主持风格 */}
               {activeMeeting && (
-                <div className="control-block" style={{ marginTop: "14px" }}>
+                <div className="control-block">
                   <p className="control-label">主持人风格模式</p>
-                  <div className="moderator-list" style={{ marginTop: "8px" }}>
+                  <div className="moderator-list" style={{ marginTop: "12px" }}>
                     {moderatorModes.map((mode) => (
                       <button
                         className={`moderator-card ${activeMeeting.moderatorId === mode.id ? "is-selected" : ""}`}
