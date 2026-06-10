@@ -13,6 +13,7 @@ export type Expert = TenantScoped & {
   systemPrompt: string;
   debateIntensity: number; // 个人辩论强度 (1-5)
   isCustom?: boolean;      // 是否为自定义智能体
+  isHidden?: boolean;      // 是否在列表中被软删除（隐藏）
 };
 
 export type LLMEngineConfig = TenantScoped & {

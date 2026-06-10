@@ -8,7 +8,11 @@ import {
   useRef,
   useState,
 } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { experts as defaultExperts, moderatorModes, mergeSystemExperts } from "@/lib/experts";
+import { ExpertModal } from "@/components/ExpertModal";
 import { LocalStorageService } from "@/lib/storage-service";
 import {
   Expert,
@@ -56,17 +60,6 @@ export default function Home() {
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
   const [isEngineModalOpen, setIsEngineModalOpen] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<Expert | null>(null);
-
-  // 自定义专家表单
-  const [customDraft, setCustomDraft] = useState({
-    name: "",
-    title: "",
-    lens: "",
-    temperament: "",
-    systemPrompt: "",
-    debateIntensity: 3,
-  });
-  const [customError, setCustomError] = useState("");
 
   // 自定义模型配置表单
   const [engineDraft, setEngineDraft] = useState<LLMEngineConfig>({
@@ -286,41 +279,9 @@ export default function Home() {
   // 自定义智能体操作
   function openCustomModal() {
     setIsCustomModalOpen(true);
-    setCustomError("");
   }
 
-  function closeCustomModal() {
-    setIsCustomModalOpen(false);
-    setCustomDraft({
-      name: "",
-      title: "",
-      lens: "",
-      temperament: "",
-      systemPrompt: "",
-      debateIntensity: 3,
-    });
-  }
-
-  async function addCustomExpert() {
-    const { name, title, lens, temperament, systemPrompt, debateIntensity } = customDraft;
-    if (!name.trim() || !lens.trim()) {
-      setCustomError("请至少填写角色名称和判断视角。");
-      return;
-    }
-
-    const newExpert: Expert = {
-      id: `custom-${Date.now()}`,
-      tenantId: TENANT_ID,
-      name: name.trim(),
-      title: title.trim() || "自定义视角专家",
-      lens: lens.trim(),
-      temperament: temperament.trim() || "按照自定义人物设定进行理性判断。",
-      focus: ["自定义审视", "接受度", "商业闭环"],
-      debateIntensity: Number(debateIntensity),
-      systemPrompt: systemPrompt.trim() || `你是${name.trim()}。请从以下视角进行评审：${lens.trim()}。性格：${temperament.trim()}。请客观分析，指出风险，并给出折中方案。`,
-      isCustom: true,
-    };
-
+  async function handleSaveCustomExpert(newExpert: Expert) {
     await storage.saveCustomExpert(TENANT_ID, newExpert);
     setCustomExperts(prev => [...prev, newExpert]);
     
@@ -331,7 +292,7 @@ export default function Home() {
       });
     }
 
-    closeCustomModal();
+    setIsCustomModalOpen(false);
   }
 
   async function confirmDeleteCustomExpert() {
@@ -1326,9 +1287,24 @@ export default function Home() {
                         </p>
                       )}
                       
-                      <div className="message-content" style={{ whiteSpace: "pre-wrap" }}>
-                        {message.content}
+                      <div className="message-content markdown-body" style={{ fontSize: "14px" }}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                          {message.content}
+                        </ReactMarkdown>
                       </div>
+
+                      {message.sources && message.sources.length > 0 && (
+                        <div className="message-sources" style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px" }}>
+                          {message.sources.map((source) => (
+                            <div key={source.id} className="attachment-pill" style={{ background: "var(--surface)", border: "1px solid var(--line)", padding: "4px 8px", borderRadius: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
+                              <span style={{ fontSize: "10px", fontWeight: "bold", color: "var(--muted)", background: "var(--surface-strong)", padding: "2px 4px", borderRadius: "4px" }}>
+                                {source.kind.toUpperCase()}
+                              </span>
+                              <span style={{ fontSize: "13px", color: "var(--ink)", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       {message.expertStance && (
                         <div className="assistant-result" style={{ marginTop: "10px" }}>
@@ -1612,103 +1588,16 @@ export default function Home() {
             </>
           )}
         </section>
+      </form>
 
-        {/* 弹窗：新建自定义智能体 */}
-        {isCustomModalOpen && (
-          <div className="modal-backdrop">
-            <section className="modal-card">
-              <div className="modal-header">
-                <div>
-                  <p className="eyebrow">Organization Agent</p>
-                  <h2>新增组织智能体 (自定义视角)</h2>
-                </div>
-                <button
-                  className="icon-button"
-                  type="button"
-                  onClick={closeCustomModal}
-                >
-                  ×
-                </button>
-              </div>
-              
-              <label className="compact-field">
-                <span>智能体角色名称</span>
-                <input
-                  placeholder="如：安全合规官"
-                  value={customDraft.name}
-                  onChange={(e) => setCustomDraft({ ...customDraft, name: e.target.value })}
-                />
-              </label>
-
-              <label className="compact-field">
-                <span>角色头衔标签</span>
-                <input
-                  placeholder="如：合规风险架构师"
-                  value={customDraft.title}
-                  onChange={(e) => setCustomDraft({ ...customDraft, title: e.target.value })}
-                />
-              </label>
-
-              <label className="field-block">
-                <span>审视该议题的专业视角 (Lens)</span>
-                <input
-                  type="text"
-                  placeholder="说明该智能体着重挑刺/关注哪些点。如：评估页面是否涉嫌虚假宣传、隐私协议是否合规。"
-                  value={customDraft.lens}
-                  onChange={(e) => setCustomDraft({ ...customDraft, lens: e.target.value })}
-                />
-              </label>
-
-              <label className="compact-field">
-                <span>智能体性格脾气 (Temperament)</span>
-                <input
-                  placeholder="如：极其挑剔、强迫症、极其保守"
-                  value={customDraft.temperament}
-                  onChange={(e) => setCustomDraft({ ...customDraft, temperament: e.target.value })}
-                />
-              </label>
-
-              <label className="compact-field">
-                <span>高级系统 Prompt (可选)</span>
-                <textarea
-                  placeholder="可以填入该智能体大模型专属的完整 System Setting。"
-                  value={customDraft.systemPrompt}
-                  onChange={(e) => setCustomDraft({ ...customDraft, systemPrompt: e.target.value })}
-                />
-              </label>
-
-              <label className="compact-field">
-                <span>默认辩论激烈度：{customDraft.debateIntensity}</span>
-                <input
-                  type="range"
-                  min="1"
-                  max="5"
-                  value={customDraft.debateIntensity}
-                  onChange={(e) => setCustomDraft({ ...customDraft, debateIntensity: Number(e.target.value) })}
-                />
-              </label>
-
-              {customError && <p className="custom-error">{customError}</p>}
-
-              <div className="modal-actions">
-                <button
-                  className="ghost-button"
-                  type="button"
-                  onClick={closeCustomModal}
-                >
-                  取消
-                </button>
-                <button
-                  className="primary-button"
-                  type="button"
-                  onClick={addCustomExpert}
-                >
-                  添加组织角色
-                </button>
-              </div>
-            </section>
-          </div>
-        )}
+        {/* 弹窗：新建自定义智能体 (已抽取为独立组件) */}
+        <ExpertModal 
+          isOpen={isCustomModalOpen}
+          mode="create"
+          onClose={() => setIsCustomModalOpen(false)}
+          onSave={handleSaveCustomExpert}
+          initialData={{ isCustom: true }}
+        />
 
         {/* 弹窗：管理新增组织大模型引擎 */}
         {isEngineModalOpen && (
@@ -1826,7 +1715,6 @@ export default function Home() {
             </section>
           </div>
         )}
-      </form>
     </main>
   );
 }
