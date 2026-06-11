@@ -67,6 +67,7 @@ export default function Home() {
   const [discussingMeetings, setDiscussingMeetings] = useState<Record<string, boolean>>({});
   const [speakingExpertIds, setSpeakingExpertIds] = useState<Record<string, string | null>>({});
   const [synthesisPendingMeetings, setSynthesisPendingMeetings] = useState<Record<string, boolean>>({});
+  const [assigningNextSpeaker, setAssigningNextSpeaker] = useState<Record<string, boolean>>({});
 
   const discussAbortControllersRef = useRef<Record<string, AbortController>>({});
   const conclusionAbortControllersRef = useRef<Record<string, AbortController>>({});
@@ -139,8 +140,8 @@ export default function Home() {
   const handleThreadScroll = () => {
     if (!chatThreadRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = chatThreadRef.current;
-    // 如果滚动条距离底部小于 50px，视为在最底部，开启自动滚动
-    isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 50;
+    // 如果滚动条距离底部小于 150px，视为在最底部，开启自动滚动
+    isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 150;
   };
 
   const handleSwitchMeeting = (newMeetingId: string) => {
@@ -263,7 +264,7 @@ export default function Home() {
           if (savedScroll !== undefined) {
             thread.scrollTop = savedScroll;
             const { scrollTop, scrollHeight, clientHeight } = thread;
-            isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 50;
+            isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 150;
           } else {
             const conclusionEl = document.getElementById("conclusion-panel");
             if (activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && conclusionEl) {
@@ -649,7 +650,6 @@ export default function Home() {
     ].join("\n\n");
   }
 
-  // 专家单步发言逻辑封装 (API 调用)
   async function requestExpertTurn(
     meeting: Meeting,
     expert: Expert,
@@ -657,7 +657,8 @@ export default function Home() {
     userQuestion: string,
     contextStr: string,
     history: ChatMessage[],
-    signal: AbortSignal
+    signal: AbortSignal,
+    onChunk?: (text: string) => void
   ) {
     const response = await fetch("/api/discussions/expert-turn", {
       method: "POST",
@@ -677,11 +678,96 @@ export default function Home() {
     });
 
     if (!response.ok) {
-      const payload = await response.json();
+      const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || "大模型在生成智能体观点时失败。");
     }
 
-    return response.json();
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("text/event-stream")) {
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let fullContent = "";
+      if (!reader) throw new Error("No reader");
+      
+      let isNativeReasoning = false;
+      let hasClosedNativeReasoning = false;
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data: ") && line !== "data: [DONE]") {
+            try {
+              const data = JSON.parse(line.slice(6));
+              const reasoningChunk = data.choices[0]?.delta?.reasoning_content;
+              const contentChunk = data.choices[0]?.delta?.content;
+
+              if (reasoningChunk) {
+                if (!isNativeReasoning) {
+                  fullContent += "<think>\n";
+                  isNativeReasoning = true;
+                }
+                fullContent += reasoningChunk;
+              }
+
+              if (contentChunk) {
+                if (isNativeReasoning && !hasClosedNativeReasoning) {
+                  fullContent += "\n</think>\n";
+                  hasClosedNativeReasoning = true;
+                }
+                fullContent += contentChunk;
+              }
+
+              if (onChunk) onChunk(fullContent);
+            } catch (e) {}
+          }
+        }
+      }
+      
+      let stance = "暂无立场摘要";
+      let concern = "暂无风险摘要";
+      let recommendation = "暂无建议摘要";
+      let tradeoff = "暂无取舍摘要";
+      let displayContent = fullContent;
+      
+      const jsonRegex = /```[a-zA-Z]*\s*(\{[\s\S]*?\})\s*```|(\{[\s\S]*?\})/;
+      const jsonMatch = fullContent.match(jsonRegex);
+      
+      if (jsonMatch) {
+        const jsonString = jsonMatch[1] || jsonMatch[2];
+        try {
+          const parsed = JSON.parse(jsonString);
+          stance = parsed.stance || stance;
+          concern = parsed.concern || concern;
+          recommendation = parsed.recommendation || recommendation;
+          tradeoff = parsed.tradeoff || tradeoff;
+        } catch (e) {
+          const matchField = (field: string) => {
+            const regex = new RegExp(`"${field}"\\s*:\\s*"([^"]+)"`);
+            const res = jsonString.match(regex);
+            return res ? res[1] : "";
+          };
+          stance = matchField("stance") || stance;
+          concern = matchField("concern") || concern;
+          recommendation = matchField("recommendation") || recommendation;
+          tradeoff = matchField("tradeoff") || tradeoff;
+        }
+        
+        displayContent = fullContent.replace(jsonMatch[0], "");
+        displayContent = displayContent
+          .replace(/```[a-zA-Z]*\s*$/, "")
+          .replace(/[\s\n\]\[`]+$/, "")
+          .trim();
+      }
+      return {
+        content: displayContent,
+        expertStance: { stance, concern, recommendation, tradeoff }
+      };
+    } else {
+      return response.json();
+    }
   }
 
   // 智能相关度下一发言人决策
@@ -863,7 +949,9 @@ export default function Home() {
         // 确定下一个发言人
         let currentExpert: Expert;
         if (currentMeeting.turnOrderMode === "relevance" && remainCandidates.length > 1) {
+          setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: true }));
           const nextId = await requestNextSpeakerId(userQuestion, previousTurns, remainCandidates, conversationHistory, signal);
+          setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: false }));
           currentExpert = remainCandidates.find(e => e.id === nextId) || remainCandidates[0];
         } else {
           currentExpert = remainCandidates[0];
@@ -873,6 +961,24 @@ export default function Home() {
 
         setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: currentExpert.id }));
 
+        // 先创建一条空的专家发言
+        const expertMessageId = `msg-${Date.now()}-${currentExpert.id}`;
+        let expertMessage: ChatMessage = {
+          id: expertMessageId,
+          meetingId: targetMeetingId,
+          tenantId: TENANT_ID,
+          role: "expert",
+          senderId: currentExpert.id,
+          senderName: currentExpert.name,
+          senderTitle: currentExpert.title,
+          content: "",
+          createdAt: Date.now(),
+        };
+
+        let nextMsgs = [...currentMeeting.messages, expertMessage];
+        currentMeeting = { ...currentMeeting, messages: nextMsgs };
+        setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
+
         // 调用单步发言
         const turnResult = await requestExpertTurn(
           currentMeeting,
@@ -881,24 +987,27 @@ export default function Home() {
           userQuestion,
           contextStr,
           conversationHistory,
-          signal
+          signal,
+          (text) => {
+            // Update message content incrementally
+            expertMessage.content = text;
+            const updatedMsgs = currentMeeting.messages.map(msg => 
+              msg.id === expertMessageId ? { ...expertMessage } : msg
+            );
+            setMeetings(prev => prev.map(m => m.id === targetMeetingId ? { ...m, messages: updatedMsgs } : m));
+          }
         );
 
-        // 生成专家发言并追加
-        const expertMessage: ChatMessage = {
-          id: `msg-${Date.now()}-${currentExpert.id}`,
-          meetingId: targetMeetingId,
-          tenantId: TENANT_ID,
-          role: "expert",
-          senderId: currentExpert.id,
-          senderName: currentExpert.name,
-          senderTitle: currentExpert.title,
+        // 终结：填入带有 Stance 的最终内容并保存
+        expertMessage = {
+          ...expertMessage,
           content: turnResult.content,
           expertStance: turnResult.expertStance,
-          createdAt: Date.now(),
         };
 
-        const nextMsgs = [...currentMeeting.messages, expertMessage];
+        nextMsgs = currentMeeting.messages.map(msg => 
+          msg.id === expertMessageId ? expertMessage : msg
+        );
         currentMeeting = { ...currentMeeting, messages: nextMsgs };
         setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
         await storage.saveMeeting(TENANT_ID, currentMeeting);
@@ -996,6 +1105,23 @@ export default function Home() {
     const contextStr = [meetingContextStr, projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
     try {
+      const expertMessageId = `msg-${Date.now()}-${expert.id}`;
+      let expertMessage: ChatMessage = {
+        id: expertMessageId,
+        meetingId: targetMeetingId,
+        tenantId: TENANT_ID,
+        role: "expert",
+        senderId: expert.id,
+        senderName: expert.name,
+        senderTitle: expert.title,
+        content: "",
+        createdAt: Date.now(),
+      };
+
+      let nextMsgs = [...activeMeeting.messages, expertMessage];
+      let currentMeetingState = { ...activeMeeting, messages: nextMsgs };
+      setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeetingState : m));
+
       const turnResult = await requestExpertTurn(
         activeMeeting,
         expert,
@@ -1003,26 +1129,28 @@ export default function Home() {
         userQuestion,
         contextStr,
         conversationHistory,
-        signal
+        signal,
+        (text) => {
+          expertMessage.content = text;
+          const updatedMsgs = currentMeetingState.messages.map(msg => 
+            msg.id === expertMessageId ? { ...expertMessage } : msg
+          );
+          setMeetings(prev => prev.map(m => m.id === targetMeetingId ? { ...m, messages: updatedMsgs } : m));
+        }
       );
 
-      const expertMessage: ChatMessage = {
-        id: `msg-${Date.now()}-${expert.id}`,
-        meetingId: targetMeetingId,
-        tenantId: TENANT_ID,
-        role: "expert",
-        senderId: expert.id,
-        senderName: expert.name,
-        senderTitle: expert.title,
+      expertMessage = {
+        ...expertMessage,
         content: turnResult.content,
         expertStance: turnResult.expertStance,
-        createdAt: Date.now(),
       };
 
-      const nextMsgs = [...activeMeeting.messages, expertMessage];
-      const nextMeetingState = { ...activeMeeting, messages: nextMsgs };
-      setMeetings(prev => prev.map(m => m.id === targetMeetingId ? nextMeetingState : m));
-      await storage.saveMeeting(TENANT_ID, nextMeetingState);
+      nextMsgs = currentMeetingState.messages.map(msg => 
+        msg.id === expertMessageId ? expertMessage : msg
+      );
+      currentMeetingState = { ...currentMeetingState, messages: nextMsgs };
+      setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeetingState : m));
+      await storage.saveMeeting(TENANT_ID, currentMeetingState);
 
     } catch (e: any) {
       if (e.name !== "AbortError" && !signal.aborted) {
@@ -1562,22 +1690,101 @@ export default function Home() {
                       {isUser ? "你" : isMod ? "主持" : message.senderName.slice(0, 2)}
                     </div>
                     <div className="message-body">
-                      {(isExp || isMod || isUser) && (
-                        <p style={{ 
-                          fontSize: "11px", 
-                          color: "var(--muted)", 
-                          marginBottom: "4px",
-                          textAlign: isUser ? "right" : "left"
-                        }}>
-                          {isUser ? userProfile.name : message.senderName} · {isUser ? userProfile.title : (message.senderTitle || "总监")}
-                        </p>
-                      )}
-                      
-                      <div className="message-content markdown-body" style={{ fontSize: "14px" }}>
-                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
-                          {message.content.replace(/[\s\n>]*$/, '')}
-                        </ReactMarkdown>
-                      </div>
+                      {(() => {
+                        const safeContent = message.content || "";
+                        let displayContent = safeContent.replace(/[\s\n>]*$/, '');
+                        let thinkingContent = "";
+                        let isThinkingDone = false;
+                        const thinkMatch = displayContent.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
+                        
+                        if (thinkMatch) {
+                          thinkingContent = thinkMatch[1].trim();
+                          isThinkingDone = safeContent.includes("</think>");
+                          displayContent = displayContent.replace(thinkMatch[0], "").trim();
+                        } else {
+                          isThinkingDone = true;
+                        }
+
+                        const isTTFB = speakingExpertIds[activeMeetingId] === message.senderId && safeContent.length === 0;
+                        const isStartingThink = speakingExpertIds[activeMeetingId] === message.senderId && safeContent.startsWith("<") && !thinkMatch;
+
+                        return (
+                          <>
+                            {(isExp || isMod || isUser) && (
+                              <div style={{ 
+                                display: "flex", 
+                                alignItems: "flex-start", 
+                                gap: "12px", 
+                                marginBottom: "4px",
+                                justifyContent: isUser ? "flex-end" : "flex-start"
+                              }}>
+                                <span style={{ 
+                                  fontSize: "11px", 
+                                  color: "var(--muted)", 
+                                  marginTop: "2px",
+                                  flexShrink: 0
+                                }}>
+                                  {isUser ? userProfile.name : message.senderName} · {isUser ? userProfile.title : (message.senderTitle || "总监")}
+                                </span>
+                                
+                                {thinkingContent && isThinkingDone && (
+                                  <details style={{ flex: 1, textAlign: isUser ? "right" : "left" }}>
+                                    <summary style={{ 
+                                      fontSize: "11px", color: "var(--muted)", cursor: "pointer", userSelect: "none", 
+                                      fontWeight: "500", display: "inline-block",
+                                      background: "var(--surface-strong)", padding: "2px 8px", borderRadius: "999px",
+                                      border: "1px solid var(--line)"
+                                    }}>
+                                      深度思考已折叠
+                                    </summary>
+                                    <div style={{ 
+                                      fontSize: "13px", color: "var(--muted)", whiteSpace: "pre-wrap", 
+                                      fontStyle: "italic", marginTop: "8px", padding: "10px 14px", 
+                                      background: "rgba(0,0,0,0.02)", border: "1px dashed var(--line)", 
+                                      borderRadius: "6px", textAlign: "left"
+                                    }}>
+                                      {thinkingContent}
+                                    </div>
+                                  </details>
+                                )}
+                              </div>
+                            )}
+                            
+                            {(!isThinkingDone && (isTTFB || isStartingThink || thinkingContent.length > 0)) && (
+                              <div className="thinking-card" style={{ marginBottom: "8px", background: "transparent", border: "none", padding: "0" }}>
+                                <div className="thinking-loader" style={{ margin: 0, opacity: 0.7 }}>
+                                  <span>
+                                    {isTTFB ? "正在审视议题" : "正在深度思考"}
+                                  </span>
+                                  <div className="dot-pulse" style={{ marginLeft: "4px" }}>
+                                    <span />
+                                    <span />
+                                    <span />
+                                  </div>
+                                </div>
+                                {isTTFB && (
+                                  <div style={{ fontSize: "12px", color: "var(--muted)", marginTop: "4px" }}>
+                                    正在结合个人对抗强度与会议历史多轮对话上下文编排论点...
+                                  </div>
+                                )}
+                                {thinkingContent && (
+                                  <div style={{ fontSize: "13px", color: "var(--muted)", whiteSpace: "pre-wrap", fontStyle: "italic", marginTop: "8px", paddingLeft: "12px", borderLeft: "2px solid var(--line)" }}>
+                                    {thinkingContent}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {displayContent && (
+                              <div className="message-content markdown-body" style={{ fontSize: "14px", position: "relative" }}>
+                                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                                  {displayContent}
+                                </ReactMarkdown>
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
 
                       {message.sources && message.sources.length > 0 && (
                         <div className="message-sources" style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px", justifyContent: isUser ? "flex-end" : "flex-start" }}>
@@ -1596,10 +1803,10 @@ export default function Home() {
                         <div className="assistant-result" style={{ marginTop: "10px" }}>
                           <div className="result-card" style={{ borderLeft: "3px solid var(--amber)", borderRadius: "8px" }}>
                             <div className="result-grid">
-                              <p><strong>立场观点：</strong>{message.expertStance.stance}</p>
-                              <p><strong>关键风险：</strong>{message.expertStance.concern}</p>
-                              <p><strong>实施建议：</strong>{message.expertStance.recommendation}</p>
-                              <p><strong>方案取舍：</strong>{message.expertStance.tradeoff}</p>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>立场观点：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.expertStance.stance}</ReactMarkdown></div></div>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>关键风险：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.expertStance.concern}</ReactMarkdown></div></div>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>实施建议：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.expertStance.recommendation}</ReactMarkdown></div></div>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>方案取舍：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.expertStance.tradeoff}</ReactMarkdown></div></div>
                             </div>
                           </div>
                         </div>
@@ -1639,24 +1846,21 @@ export default function Home() {
               </div>
             )}
 
-            {speakingExpertIds[activeMeetingId] && (
-              <article className="chat-message expert">
-                <div className="message-avatar">
-                  {allExperts.find(e => e.id === speakingExpertIds[activeMeetingId])?.name.slice(0, 2) || "AI"}
-                </div>
+
+
+            {assigningNextSpeaker[activeMeetingId] && (
+              <article className="chat-message moderator">
+                <div className="message-avatar">主持</div>
                 <div className="message-body">
-                  <div className="thinking-card" style={{ borderRadius: "8px" }}>
+                  <div className="thinking-card" style={{ borderStyle: "solid", borderColor: "var(--amber)", borderRadius: "8px" }}>
                     <div className="thinking-loader">
-                      <strong>{allExperts.find(e => e.id === speakingExpertIds[activeMeetingId])?.name}</strong> 正在审视议题
+                      <strong style={{ color: "var(--amber)" }}>主持人</strong> 正在智能指派下一位发言专家
                       <div className="dot-pulse">
                         <span />
                         <span />
                         <span />
                       </div>
                     </div>
-                    <span style={{ fontSize: "12px", color: "var(--muted)" }}>
-                      正在结合个人对抗强度与会议历史多轮对话上下文编排论点...
-                    </span>
                   </div>
                 </div>
               </article>

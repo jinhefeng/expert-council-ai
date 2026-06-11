@@ -45,7 +45,7 @@ export default function AdminPage() {
   // 大模型表单 Modal
   const [isEngineModalOpen, setIsEngineModalOpen] = useState(false);
   const [engineDraft, setEngineDraft] = useState<LLMEngineConfig>({
-    id: "", name: "", provider: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o", isActive: false,
+    id: "", name: "", provider: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o", isActive: false, isReasoningModel: false, enableStreaming: false,
   });
 
   // 单模型导入 Modal
@@ -328,7 +328,7 @@ export default function AdminPage() {
             <div style={{ display: "flex", gap: "12px", alignItems: "center", flexShrink: 0 }}>
               <button className="ghost-button" style={{ padding: "8px 16px", fontSize: "13px", whiteSpace: "nowrap" }} onClick={() => { setImportDraft(""); setIsImportModalOpen(true); }}>导入单模型</button>
               <button className="primary-button" style={{ padding: "8px 16px", fontSize: "13px", whiteSpace: "nowrap" }} type="button" onClick={() => {
-                setEngineDraft({ id: "", name: "", provider: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o", isActive: false });
+                setEngineDraft({ id: "", name: "", provider: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o", isActive: false, isReasoningModel: false, enableStreaming: false });
                 setIsEngineModalOpen(true);
               }}>
                 + 新建配置
@@ -582,6 +582,16 @@ export default function AdminPage() {
                 <span>Model 标识符</span>
                 <input required placeholder="如：gpt-4o, qwen-max" value={engineDraft.model} onChange={e => setEngineDraft({...engineDraft, model: e.target.value})} />
               </label>
+              <div style={{ display: "flex", gap: "16px", marginTop: "8px", marginBottom: "8px" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!engineDraft.isReasoningModel} onChange={e => setEngineDraft({...engineDraft, isReasoningModel: e.target.checked})} />
+                  推理模型 (支持 o1/DeepSeek-R1)
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px", cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!engineDraft.enableStreaming} onChange={e => setEngineDraft({...engineDraft, enableStreaming: e.target.checked})} />
+                  启用流式输出 (逐字渲染)
+                </label>
+              </div>
               <div className="modal-actions" style={{ padding: "24px 0", marginTop: "8px" }}>
                 <button type="button" className="ghost-button" onClick={() => setIsEngineModalOpen(false)}>取消</button>
                 <button type="submit" className="primary-button">保存配置</button>

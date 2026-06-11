@@ -30,6 +30,8 @@ export type LLMEngineConfig = TenantScoped & {
   apiKey: string;
   model: string;
   isActive: boolean;
+  isReasoningModel?: boolean;
+  enableStreaming?: boolean;
 };
 
 export type Meeting = TenantScoped & {

@@ -68,9 +68,9 @@ export async function callLLM({
         },
         body: JSON.stringify({
           model,
-          messages,
-          temperature,
-          max_tokens: maxTokens,
+          messages: config.isReasoningModel ? messages.map(m => m.role === "system" ? { ...m, role: "user" } : m) : messages,
+          max_tokens: maxTokens ?? 4000,
+          ...(config.isReasoningModel ? {} : { temperature }),
         }),
       });
       break; // Success
@@ -115,6 +115,54 @@ export async function callLLM({
     throw new Error(`模型未返回有效内容。大模型原生返回数据: ${JSON.stringify(data)}`);
   }
   return content.trim();
+}
+
+// 执行流式 LLM 请求
+export async function callLLMStream({
+  config,
+  messages,
+  temperature = 0.5,
+  maxTokens = 4000,
+}: {
+  config: LLMEngineConfig;
+  messages: { role: "system" | "user" | "assistant"; content: string }[];
+  temperature?: number;
+  maxTokens?: number;
+}): Promise<Response> {
+  const baseUrl = config.baseUrl || "https://api.openai.com/v1";
+  const apiKey = config.apiKey;
+  const model = config.model;
+
+  if (!apiKey) {
+    throw new Error(`引擎 "${config.name}" 未配置 API Key`);
+  }
+
+  const payload: any = {
+    model,
+    messages: config.isReasoningModel ? messages.map(m => m.role === "system" ? { ...m, role: "user" } : m) : messages,
+    stream: true,
+    max_tokens: maxTokens ?? 4000,
+  };
+
+  if (!config.isReasoningModel) {
+    payload.temperature = temperature;
+  }
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`模型流式请求失败: ${detail}`);
+  }
+
+  return response;
 }
 
 // 将前端完整的 ChatMessage[] 聊天流转换格式化为大模型兼容的对话轮次
@@ -283,6 +331,75 @@ export async function getExpertTurn({
   };
 }
 
+// 1.5 专家发言流式接口
+export async function getExpertTurnStream({
+  question,
+  projectContext = "",
+  expert,
+  previousTurns = [],
+  globalDebateIntensity = 3,
+  engineConfig,
+  conversationHistory = [],
+  llmParams,
+  systemPrompts,
+}: {
+  question: string;
+  projectContext?: string;
+  expert: Expert;
+  previousTurns: { expertName: string; content: string }[];
+  globalDebateIntensity?: number;
+  engineConfig?: LLMEngineConfig;
+  conversationHistory?: ChatMessage[];
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
+}): Promise<Response> {
+  const activeEngine = engineConfig || getSystemEngine();
+
+  if (!activeEngine) {
+    throw new Error(
+      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+    );
+  }
+
+  const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity, systemPrompts);
+  const expertTurnPrompt = systemPrompts.expertTurnFormat.replace("{expertName}", expert.name);
+  const systemPrompt = [
+    expert.systemPrompt,
+    `你的性格与气质：${expert.temperament}`,
+    `你关注的焦点：${expert.focus.join("、")}`,
+    intensityPrompt,
+    expertTurnPrompt
+  ].join("\n\n");
+
+  const historyMessages = formatConversationHistoryForLLM(conversationHistory);
+
+  const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+  ];
+
+  const currentTurnPreviousText = previousTurns.length
+    ? "本轮专家讨论中，此前已发言记录：\n" +
+      previousTurns.map((turn) => `【${turn.expertName}】：${turn.content}`).join("\n\n")
+    : "本轮中你是第一个发言的专家。";
+
+  const currentUserTurnText = [
+    `当前会议新议题：${question}`,
+    projectContext ? `项目背景及附件信息：\n${projectContext}` : "",
+    currentTurnPreviousText,
+    `请针对当前议题表达你的专业视角发言：`
+  ].filter(Boolean).join("\n\n");
+
+  promptMessages.push({ role: "user", content: currentUserTurnText });
+
+  return callLLMStream({
+    config: activeEngine,
+    messages: promptMessages,
+    temperature: llmParams.expertTemperature,
+    maxTokens: llmParams.maxTokens,
+  });
+}
+
 // 2. 主持人决策综合
 export async function getSynthesis({
   question,
@@ -428,8 +545,11 @@ export async function getNextSpeaker({
     maxTokens: llmParams.maxTokens,
   });
 
-  const cleanedId = chosenId.trim();
-  const matched = candidateExperts.find((c) => c.id === cleanedId);
+  const cleanedId = chosenId.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  let matched = candidateExperts.find((c) => c.id === cleanedId);
+  if (!matched) {
+    matched = candidateExperts.find((c) => cleanedId.includes(c.id));
+  }
   return matched ? matched.id : candidateExperts[0].id;
 }
 

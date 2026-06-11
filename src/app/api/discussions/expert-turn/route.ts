@@ -1,4 +1,4 @@
-import { getExpertTurn } from "@/lib/model-router";
+import { getExpertTurn, getExpertTurnStream } from "@/lib/model-router";
 
 export async function POST(request: Request) {
   try {
@@ -19,19 +19,34 @@ export async function POST(request: Request) {
       return Response.json({ error: "question and expert are required" }, { status: 400 });
     }
 
-    const result = await getExpertTurn({
-      question,
-      projectContext,
-      expert,
-      previousTurns,
-      globalDebateIntensity: Number(globalDebateIntensity ?? 3),
-      engineConfig,
-      conversationHistory,
-      llmParams,
-      systemPrompts,
-    });
+    if (engineConfig?.enableStreaming) {
+      const responseStream = await getExpertTurnStream({
+        question,
+        projectContext,
+        expert,
+        previousTurns,
+        globalDebateIntensity: Number(globalDebateIntensity ?? 3),
+        engineConfig,
+        conversationHistory,
+        llmParams,
+        systemPrompts,
+      });
+      return responseStream;
+    } else {
+      const result = await getExpertTurn({
+        question,
+        projectContext,
+        expert,
+        previousTurns,
+        globalDebateIntensity: Number(globalDebateIntensity ?? 3),
+        engineConfig,
+        conversationHistory,
+        llmParams,
+        systemPrompts,
+      });
 
-    return Response.json(result);
+      return Response.json(result);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to generate expert turn.";
     return Response.json({ error: message }, { status: 500 });
