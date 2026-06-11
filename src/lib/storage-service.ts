@@ -61,6 +61,8 @@ export const DEFAULT_SYSTEM_PROMPTS: SystemPromptsConfig = {
   synthesisPrompt: "你是一名专业的圆桌评审主持人。你的主持风格是：{moderatorName}（{moderatorDesc}）。\nIMPORTANT: 必须全程使用中文（简体中文）进行回答！\n请综合本轮所有专家的讨论发言，为用户生成一份极具专业度、可执行的会议纪要。\n输出格式要求：\n你必须输出一个纯 JSON 块。不得含有任何 markdown 格式的说明文字，仅返回 JSON：\n{\n  \"summary\": \"本次会议综合性的总结词，交代主持结论\",\n  \"consensus\": [\"共识点一\", \"共识点二\"],\n  \"disagreements\": [\"主要的分歧点一\", \"主要的分歧点二\"],\n  \"decisions\": [\"最终的主持决策决定一\", \"最终的主持决策决定二\"],\n  \"nextActions\": [\"下一步行动一\", \"下一步行动二\"]\n}\n注意：直接输出 JSON 格式即可。",
   nextSpeakerPrompt: "你名是会议发言调度官。根据当前的讨论问题和历史发言内容，从剩余的候选发言专家中，挑选一个“与当前话题最契合、最应该进行回应或发言”的专家。\n候选专家列表：\n{candidateList}\n\n请从列表中选择其一，仅返回选中的专家 ID，不要输出任何其他解释文字。",
   finalConclusionPrompt: "你是一名高阶会议纪要与战略复盘专家。\nIMPORTANT: 必须全程使用中文（简体中文）进行回答！\n请根据以下所有的会议历史记录，全面客观地提取出本场会议的“最终结论”。\n输出要求：\n1. 结论必须是对整场会议核心共识、遗留分歧、后续行动的精炼总结。\n2. 必须直接输出纯文本的 Markdown 格式（建议使用二级/三级标题、加粗、列表），不需要包裹 JSON，也不要包含多余的客套话。\n3. 语言必须高度专业、客观、不偏不倚，具有“一锤定音”的总裁办汇报风格。",
+  meetingDescPrompt: "你是一个专业的高管会议秘书。你的任务是根据给定的会议主题，生成一段专业、精炼的会议描述（核心议题上下文）。要求语气正式，直接切入重点，只输出1-2句话即可，绝对不要包含任何多余的问候语或解释。",
+  expertDetailsPrompt: "你是一个智能体人设构建专家。你需要为专家【{expertName}】自动生成符合其身份特征的系统设定。\n如果提供了会议上下文，请确保生成的人设紧密贴合会议语境。\n会议名称：{meetingName}\n会议描述：{meetingDesc}\n\n请直接返回JSON格式（不要加```json代码块，也不要加任何注释和废话），格式严格遵循如下结构：\n{\n  \"lens\": \"不超过20字的审视视角，例如：商业价值评估、代码架构安全...\",\n  \"temperament\": \"不超过20字的性格与气质描述，例如：冷静客观、数据驱动、风险厌恶...\",\n  \"focus\": [\"关注点1\", \"关注点2\", \"关注点3\"],\n  \"systemPrompt\": \"一段完整的系统提示词，以第一人称设定，不超过100字，说明该专家的核心职责、分析问题的视角以及他/她的利益立场。\"\n}",
 };
 
 export const DEFAULT_BUSINESS_DEFAULTS: BusinessDefaultsConfig = {
@@ -262,7 +264,9 @@ export class LocalStorageService implements StorageService {
       const data = window.localStorage.getItem(SYSTEM_PROMPTS_KEY);
       if (!data) return DEFAULT_SYSTEM_PROMPTS;
       const all = JSON.parse(data) as SystemPromptsConfig[];
-      return all.find(c => (c.tenantId || "default-org") === tenantId) || DEFAULT_SYSTEM_PROMPTS;
+      const config = all.find(c => (c.tenantId || "default-org") === tenantId);
+      if (!config) return DEFAULT_SYSTEM_PROMPTS;
+      return { ...DEFAULT_SYSTEM_PROMPTS, ...config };
     } catch (e) {
       return DEFAULT_SYSTEM_PROMPTS;
     }

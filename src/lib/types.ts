@@ -92,6 +92,8 @@ export type SystemPromptsConfig = TenantScoped & {
   synthesisPrompt: string;
   nextSpeakerPrompt: string;
   finalConclusionPrompt: string;
+  meetingDescPrompt: string;
+  expertDetailsPrompt: string;
 };
 
 export type BusinessDefaultsConfig = TenantScoped & {

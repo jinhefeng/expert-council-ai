@@ -7,6 +7,7 @@ interface ExpertModalProps {
   initialData?: Partial<Expert>;
   onClose: () => void;
   onSave: (expert: Expert) => void;
+  meetingContext?: { name: string; description?: string };
 }
 
 
@@ -30,9 +31,68 @@ const InfoTooltip = ({ text }: { text: string }) => (
   </div>
 );
 
-export function ExpertModal({ isOpen, mode, initialData, onClose, onSave }: ExpertModalProps) {
+export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetingContext }: ExpertModalProps) {
   const [draft, setDraft] = useState<Partial<Expert>>({});
   const [error, setError] = useState<string | null>(null);
+  const [isGeneratingExpert, setIsGeneratingExpert] = useState(false);
+
+  async function handleGenerateExpert() {
+    if (!draft.name && !draft.title) return;
+    setIsGeneratingExpert(true);
+    try {
+      let activeEngine = undefined;
+      const ENGINE_CONFIGS_KEY = "design-council-engine-configs";
+      const settingsStr = localStorage.getItem(ENGINE_CONFIGS_KEY);
+      if (settingsStr) {
+        try {
+          const allConfigs = JSON.parse(settingsStr);
+          const engineConfigs = Array.isArray(allConfigs) ? allConfigs.filter((c: any) => (c.tenantId || "default-org") === "default-org") : [];
+          activeEngine = engineConfigs.find((c: any) => c.isActive) || engineConfigs[0];
+        } catch(e) {}
+      }
+
+      let systemPrompts = undefined;
+      const SYSTEM_PROMPTS_KEY = "design-council-system-prompts";
+      const promptsStr = localStorage.getItem(SYSTEM_PROMPTS_KEY);
+      if (promptsStr) {
+        try {
+          const allPrompts = JSON.parse(promptsStr);
+          systemPrompts = allPrompts.find((c: any) => (c.tenantId || "default-org") === "default-org");
+        } catch(e) {}
+      }
+
+      const res = await fetch("/api/discussions/assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          task: "expert_details",
+          input: `${draft.name || ""} ${draft.title || ""}`.trim(),
+          engineConfig: activeEngine,
+          meetingContext,
+          systemPrompts,
+        }),
+      });
+      const data = await res.json();
+      if (data.result) {
+        const { lens, temperament, focus, systemPrompt } = data.result;
+        setDraft(prev => ({
+          ...prev,
+          lens: lens || prev.lens,
+          temperament: temperament || prev.temperament,
+          focus: focus && Array.isArray(focus) ? focus : prev.focus,
+          systemPrompt: systemPrompt || prev.systemPrompt
+        }));
+      } else if (data.error) {
+        alert("AI 生成失败: " + data.error);
+      }
+    } catch (e) {
+      console.error("Failed to generate expert details:", e);
+      alert("AI 生成失败，可能网络连接异常。");
+    } finally {
+      setIsGeneratingExpert(false);
+    }
+  }
+
 
   useEffect(() => {
     if (isOpen) {
@@ -105,6 +165,25 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave }: Expe
               <span>核心头衔标签 (Title) *<InfoTooltip text="该智能体代表的具体专业职能" /></span>
               <input required placeholder="如：首席安全架构师" value={draft.title || ""} onChange={e => setDraft({...draft, title: e.target.value})} />
             </label>
+          </div>
+
+          <div style={{ padding: "12px 24px", background: "rgba(212,175,55,0.05)", borderTop: "1px solid var(--line-light)", borderBottom: "1px solid var(--line-light)", margin: "16px -24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: "13px", color: "var(--muted)" }}>
+              填写完上方基本信息后，可自动生成后续人设配置
+            </div>
+            <button
+              type="button"
+              onClick={handleGenerateExpert}
+              disabled={isGeneratingExpert || (!draft.name && !draft.title)}
+              style={{
+                background: "var(--surface)", border: "1px solid var(--amber)", color: "var(--amber)", fontSize: "13px", padding: "6px 12px", borderRadius: "6px",
+                cursor: (isGeneratingExpert || (!draft.name && !draft.title)) ? "not-allowed" : "pointer",
+                opacity: (isGeneratingExpert || (!draft.name && !draft.title)) ? 0.5 : 1,
+                display: "flex", alignItems: "center", gap: "6px", fontWeight: 500
+              }}
+            >
+              ✨ {isGeneratingExpert ? "正在推理人设..." : "根据角色信息 AI 自动补全设定"}
+            </button>
           </div>
 
           <label className="compact-field">

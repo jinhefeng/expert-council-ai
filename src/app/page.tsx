@@ -81,6 +81,37 @@ export default function Home() {
   const [isMeetingModalOpen, setIsMeetingModalOpen] = useState(false);
   const [meetingModalMode, setMeetingModalMode] = useState<"create" | "edit">("create");
   const [newMeetingDraft, setNewMeetingDraft] = useState<Partial<Meeting>>({});
+  const [isGeneratingMeetingDesc, setIsGeneratingMeetingDesc] = useState(false);
+
+  async function handleGenerateMeetingDesc() {
+    if (!newMeetingDraft.name?.trim()) return;
+    setIsGeneratingMeetingDesc(true);
+    try {
+      const activeEngine = engineConfigs.find(c => c.isActive) || engineConfigs[0];
+      const res = await fetch("/api/discussions/assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          task: "meeting_description",
+          input: newMeetingDraft.name,
+          engineConfig: activeEngine,
+          systemPrompts: systemPrompts,
+        }),
+      });
+      const data = await res.json();
+      if (data.result) {
+        setNewMeetingDraft(prev => ({ ...prev, description: data.result }));
+      } else if (data.error) {
+        alert("AI 生成失败: " + data.error);
+      }
+    } catch (e) {
+      console.error("Failed to generate meeting desc:", e);
+      alert("AI 生成失败，可能网络连接异常。");
+    } finally {
+      setIsGeneratingMeetingDesc(false);
+    }
+  }
+
   const [isEngineModalOpen, setIsEngineModalOpen] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<Expert | null>(null);
 
@@ -1458,9 +1489,9 @@ export default function Home() {
 
         {/* 中间栏：会议室讨论现场 */}
         <section className="panel discussion-panel chat-panel">
-          <div className="discussion-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div className="discussion-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: 0 }}>
             <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: "12px" }}>
-              <h2 style={{ fontSize: "16px", fontWeight: "700", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", margin: 0 }}>
+              <h2 style={{ fontSize: "16px", fontWeight: "700", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", margin: 0, minWidth: 0, maxWidth: "45%" }}>
                 {activeMeeting ? activeMeeting.name : "载入中..."}
               </h2>
               {activeMeeting && (
@@ -1471,7 +1502,7 @@ export default function Home() {
               {activeMeeting?.description && (
                 <>
                   <div style={{ width: "1px", height: "14px", background: "var(--line)", flexShrink: 0 }} />
-                  <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }} title={activeMeeting.description}>
+                  <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1, minWidth: 0 }} title={activeMeeting.description}>
                     {activeMeeting.description}
                   </p>
                 </>
@@ -1549,7 +1580,7 @@ export default function Home() {
                       </div>
 
                       {message.sources && message.sources.length > 0 && (
-                        <div className="message-sources" style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px" }}>
+                        <div className="message-sources" style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px", justifyContent: isUser ? "flex-end" : "flex-start" }}>
                           {message.sources.map((source) => (
                             <div key={source.id} className="attachment-pill" style={{ background: "var(--surface)", border: "1px solid var(--line)", padding: "4px 8px", borderRadius: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
                               <span style={{ fontSize: "10px", fontWeight: "bold", color: "var(--muted)", background: "var(--surface-strong)", padding: "2px 4px", borderRadius: "4px" }}>
@@ -1578,10 +1609,33 @@ export default function Home() {
                 );
               })
             ) : (
-              <div className="empty-state-content">
-                <p className="empty-state-label">EXPERT ROUNDTABLE</p>
-                <h3>召集一场专家圆桌会</h3>
-                <p>在下方输入框中抛出您要讨论的产品规划、技术方案、业务瓶颈或任何复杂议题，AI 专家群组将开始论证。</p>
+              <div style={{
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                height: "100%", padding: "60px 20px", textAlign: "center", userSelect: "none"
+              }}>
+                <div style={{
+                  width: "80px", height: "80px", borderRadius: "50%", 
+                  background: "linear-gradient(135deg, rgba(212, 175, 55, 0.05) 0%, rgba(212, 175, 55, 0.15) 100%)",
+                  boxShadow: "0 8px 32px rgba(212, 175, 55, 0.1), inset 0 0 0 1px rgba(212, 175, 55, 0.2)",
+                  display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "28px"
+                }}>
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="9" cy="7" r="4"></circle>
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                  </svg>
+                </div>
+                <p style={{ fontSize: "12px", fontWeight: "700", letterSpacing: "1.5px", color: "var(--amber)", textTransform: "uppercase", marginBottom: "12px", opacity: 0.8 }}>
+                  Design Council AI
+                </p>
+                <h3 style={{ fontSize: "22px", fontWeight: "600", color: "var(--ink)", marginBottom: "16px", letterSpacing: "0.5px" }}>
+                  开启一场专家圆桌会议
+                </h3>
+                <p style={{ fontSize: "14px", lineHeight: "1.7", maxWidth: "480px", margin: "0 auto", color: "var(--muted)", fontWeight: "400" }}>
+                  在这里，多元视角的 AI 智囊团已就位。<br/>
+                  请在下方抛出您的产品规划、技术方案或业务瓶颈，他们将从各自的专业切面出发，为您提供全方位的深度论证与灵感碰撞。
+                </p>
               </div>
             )}
 
@@ -1936,6 +1990,7 @@ export default function Home() {
           onClose={() => setIsCustomModalOpen(false)}
           onSave={handleSaveCustomExpert}
           initialData={customModalDraft}
+          meetingContext={activeMeeting ? { name: activeMeeting.name, description: activeMeeting.description } : undefined}
         />
 
         {/* 新建/编辑会议 Modal */}
@@ -1960,7 +2015,22 @@ export default function Home() {
                   <input required value={newMeetingDraft.name || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, name: e.target.value})} />
                 </label>
                 <label className="compact-field">
-                  <span>会议描述 (核心议题上下文)</span>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                    <span style={{ marginBottom: 0 }}>会议描述 (核心议题上下文)</span>
+                    <button
+                      type="button"
+                      onClick={handleGenerateMeetingDesc}
+                      disabled={isGeneratingMeetingDesc || !newMeetingDraft.name}
+                      style={{
+                        background: "none", border: "none", color: "var(--amber)", fontSize: "12px",
+                        cursor: (isGeneratingMeetingDesc || !newMeetingDraft.name) ? "not-allowed" : "pointer",
+                        opacity: (isGeneratingMeetingDesc || !newMeetingDraft.name) ? 0.5 : 1,
+                        display: "flex", alignItems: "center", gap: "4px"
+                      }}
+                    >
+                      ✨ {isGeneratingMeetingDesc ? "生成中..." : "AI 自动完善"}
+                    </button>
+                  </div>
                   <textarea style={{ minHeight: "80px" }} required value={newMeetingDraft.description || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, description: e.target.value})} />
                 </label>
                 <label className="compact-field">

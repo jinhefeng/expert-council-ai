@@ -529,6 +529,18 @@ export default function AdminPage() {
               </label>
             </div>
 
+            <div style={{ background: "var(--surface-subtle)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>
+              <h3 style={{ fontSize: "14px", margin: 0, color: "var(--ink)" }}>阶段四：AI 辅助生成配置</h3>
+              <label className="compact-field">
+                <span>会议描述辅助生成指令</span>
+                <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.meetingDescPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, meetingDescPrompt: e.target.value })} />
+              </label>
+              <label className="compact-field">
+                <span>专家人设辅助生成指令 (包含 `{"{expertName}"}`, `{"{meetingName}"}`, `{"{meetingDesc}"}`)</span>
+                <textarea style={{ minHeight: "150px", fontFamily: "monospace" }} required value={systemPrompts.expertDetailsPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, expertDetailsPrompt: e.target.value })} />
+              </label>
+            </div>
+
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>
               <button type="submit" className="primary-button">保存提示词模板</button>
             </div>

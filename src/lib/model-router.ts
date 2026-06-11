@@ -72,7 +72,22 @@ export async function callLLM({
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content?.trim() || "模型没有返回内容。";
+  
+  if (data.error) {
+    throw new Error(`模型接口返回错误 (HTTP 200): ${JSON.stringify(data.error)}`);
+  }
+  
+  const finishReason = data.choices?.[0]?.finish_reason;
+  const content = data.choices?.[0]?.message?.content;
+  
+  if (finishReason === "length" && (!content || content.trim() === "")) {
+    throw new Error(`生成被截断！模型达到了最大 Token 限制 (当前限制为 ${maxTokens}，可能是推理模型思考过程太长耗尽了 Token)。请调大 maxTokens。原生返回: ${JSON.stringify(data)}`);
+  }
+
+  if (content === undefined || content === null || content.trim() === "") {
+    throw new Error(`模型未返回有效内容。大模型原生返回数据: ${JSON.stringify(data)}`);
+  }
+  return content.trim();
 }
 
 // 将前端完整的 ChatMessage[] 聊天流转换格式化为大模型兼容的对话轮次
