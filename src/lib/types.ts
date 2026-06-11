@@ -43,6 +43,7 @@ export type Meeting = TenantScoped & {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  finalConclusion?: string; // 会议最终结论（可由AI生成并被用户手动编辑）
 };
 
 export type ChatMessage = TenantScoped & {

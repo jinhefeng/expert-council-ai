@@ -48,9 +48,21 @@ export default function Home() {
   const [isDraggingSources, setIsDraggingSources] = useState(false);
   
   // 运行期讨论状态机
-  const [isDiscussing, setIsDiscussing] = useState(false);
-  const [speakingExpertId, setSpeakingExpertId] = useState<string | null>(null);
-  const [isSynthesisPending, setIsSynthesisPending] = useState(false);
+  const [isEditingMeeting, setIsEditingMeeting] = useState(false);
+  const [meetingDraft, setMeetingDraft] = useState<Partial<Meeting>>({});
+
+  // 最终结论相关状态
+  const [generatingConclusions, setGeneratingConclusions] = useState<Record<string, boolean>>({});
+  const [isEditingConclusion, setIsEditingConclusion] = useState(false);
+  const [conclusionDraft, setConclusionDraft] = useState("");
+  const [unlockedComposers, setUnlockedComposers] = useState<Record<string, boolean>>({});
+  
+  const [discussingMeetings, setDiscussingMeetings] = useState<Record<string, boolean>>({});
+  const [speakingExpertIds, setSpeakingExpertIds] = useState<Record<string, string | null>>({});
+  const [synthesisPendingMeetings, setSynthesisPendingMeetings] = useState<Record<string, boolean>>({});
+
+  const discussAbortControllersRef = useRef<Record<string, AbortController>>({});
+  const conclusionAbortControllersRef = useRef<Record<string, AbortController>>({});
 
   // 面板展开/收起
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -217,7 +229,7 @@ export default function Home() {
       }
     }
     prevMeetingIdRef.current = activeMeetingId || null;
-  }, [activeMeetingId, activeMeeting?.messages, speakingExpertId, isSynthesisPending]);
+  }, [activeMeetingId, activeMeeting?.messages, activeMeetingId ? speakingExpertIds[activeMeetingId] : null, activeMeetingId ? synthesisPendingMeetings[activeMeetingId] : false]);
 
   // 稳定排序缓存，避免点击时跳动
   const sortRef = useRef<{ meetingId: string | null; positions: Record<string, number> }>({
@@ -628,23 +640,34 @@ export default function Home() {
     return response.json();
   }
 
-  // 叫停会议
+  // 叫停会议讨论
   function handleAbort() {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+    if (activeMeetingId && discussAbortControllersRef.current[activeMeetingId]) {
+      discussAbortControllersRef.current[activeMeetingId].abort();
+      delete discussAbortControllersRef.current[activeMeetingId];
+    }
+  }
+
+  // 取消生成结论
+  function handleAbortConclusion() {
+    if (activeMeetingId && conclusionAbortControllersRef.current[activeMeetingId]) {
+      conclusionAbortControllersRef.current[activeMeetingId].abort();
+      delete conclusionAbortControllersRef.current[activeMeetingId];
+      setGeneratingConclusions(prev => ({ ...prev, [activeMeetingId]: false }));
     }
   }
 
   // 圆桌讨论主提交入口
   async function handleSubmitDiscussion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!activeMeeting || isDiscussing) return;
+    if (!activeMeeting || discussingMeetings[activeMeetingId] || generatingConclusions[activeMeetingId]) return;
 
     const userQuestion = question.trim();
     if (!userQuestion) return;
 
-    setIsDiscussing(true);
+    const targetMeetingId = activeMeeting.id;
+
+    setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
     setQuestion("");
     setSources([]);
 
@@ -654,7 +677,7 @@ export default function Home() {
     // 1. 创建 User 消息
     const userMessage: ChatMessage = {
       id: `msg-${Date.now()}-user`,
-      meetingId: activeMeeting.id,
+      meetingId: targetMeetingId,
       tenantId: TENANT_ID,
       role: "user",
       senderName: userProfile.name,
@@ -666,12 +689,14 @@ export default function Home() {
 
     const updatedMessages = [...activeMeeting.messages, userMessage];
     const nextMeetingState = { ...activeMeeting, messages: updatedMessages };
-    setMeetings(prev => prev.map(m => m.id === activeMeetingId ? nextMeetingState : m));
+    
+    // 初始化 UI 并立刻保存（用户的话立即上屏）
+    setMeetings(prev => prev.map(m => m.id === targetMeetingId ? nextMeetingState : m));
     await storage.saveMeeting(TENANT_ID, nextMeetingState);
 
     // 2. 构造 Abort 监控
     const controller = new AbortController();
-    abortControllerRef.current = controller;
+    discussAbortControllersRef.current[targetMeetingId] = controller;
     const signal = controller.signal;
 
     // 获取参会的专家
@@ -685,12 +710,12 @@ export default function Home() {
     try {
       // 如果没有勾选任何参会专家，直接跑主持人总结
       if (selectedExperts.length === 0) {
-        setIsSynthesisPending(true);
+        setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
         const synth = await requestSynthesis(currentMeeting, userQuestion, [], contextStr, conversationHistory, signal);
         
         const modMessage: ChatMessage = {
           id: `msg-${Date.now()}-mod`,
-          meetingId: currentMeeting.id,
+          meetingId: targetMeetingId,
           tenantId: TENANT_ID,
           role: "moderator",
           senderName: "主持人",
@@ -706,17 +731,17 @@ export default function Home() {
 
         const finalMessages = [...currentMeeting.messages, modMessage];
         currentMeeting = { ...currentMeeting, messages: finalMessages };
-        setMeetings(prev => prev.map(m => m.id === activeMeetingId ? currentMeeting : m));
+        setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
         await storage.saveMeeting(TENANT_ID, currentMeeting);
         
-        setIsSynthesisPending(false);
-        setIsDiscussing(false);
+        setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+        setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
         return;
       }
 
       // 如果是“手动点名”模式，只生成一个占位消息，提示用户点名，不自动流转队列
       if (currentMeeting.turnOrderMode === "manual") {
-        setIsDiscussing(false);
+        setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
         return;
       }
 
@@ -737,7 +762,7 @@ export default function Home() {
 
         remainCandidates = remainCandidates.filter(e => e.id !== currentExpert.id);
 
-        setSpeakingExpertId(currentExpert.id);
+        setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: currentExpert.id }));
 
         // 调用单步发言
         const turnResult = await requestExpertTurn(
@@ -753,7 +778,7 @@ export default function Home() {
         // 生成专家发言并追加
         const expertMessage: ChatMessage = {
           id: `msg-${Date.now()}-${currentExpert.id}`,
-          meetingId: currentMeeting.id,
+          meetingId: targetMeetingId,
           tenantId: TENANT_ID,
           role: "expert",
           senderId: currentExpert.id,
@@ -766,7 +791,7 @@ export default function Home() {
 
         const nextMsgs = [...currentMeeting.messages, expertMessage];
         currentMeeting = { ...currentMeeting, messages: nextMsgs };
-        setMeetings(prev => prev.map(m => m.id === activeMeetingId ? currentMeeting : m));
+        setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
         await storage.saveMeeting(TENANT_ID, currentMeeting);
 
         previousTurns.push({
@@ -776,8 +801,8 @@ export default function Home() {
       }
 
       // 4. 调用主持人综合总结
-      setSpeakingExpertId(null);
-      setIsSynthesisPending(true);
+      setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: null }));
+      setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
 
       const synth = await requestSynthesis(currentMeeting, userQuestion, previousTurns, contextStr, conversationHistory, signal);
       
@@ -799,7 +824,7 @@ export default function Home() {
 
       const finalMessages = [...currentMeeting.messages, modMessage];
       currentMeeting = { ...currentMeeting, messages: finalMessages };
-      setMeetings(prev => prev.map(m => m.id === activeMeetingId ? currentMeeting : m));
+      setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
       await storage.saveMeeting(TENANT_ID, currentMeeting);
 
     } catch (e: any) {
@@ -807,34 +832,36 @@ export default function Home() {
         // 叫停处理
         const abortMessage: ChatMessage = {
           id: `msg-abort-${Date.now()}`,
-          meetingId: currentMeeting.id,
+          meetingId: targetMeetingId,
           tenantId: TENANT_ID,
           role: "moderator",
           senderName: "系统提示",
-          content: "⚠️ 本轮专家圆桌讨论已被用户手动叫停中止。已保留之前生成的讨论观点，您可以输入新的追问或调整设置。",
+          content: "⚠️ 本轮专家圆桌讨论已被手动叫停中止。已保留之前生成的讨论观点，您可以输入新的追问或调整设置。",
           createdAt: Date.now(),
         };
         const nextMsgs = [...currentMeeting.messages, abortMessage];
         const nextState = { ...currentMeeting, messages: nextMsgs };
-        setMeetings(prev => prev.map(m => m.id === activeMeetingId ? nextState : m));
+        setMeetings(prev => prev.map(m => m.id === targetMeetingId ? nextState : m));
         await storage.saveMeeting(TENANT_ID, nextState);
       } else {
         console.error("圆桌讨论异常中止", e);
         alert(`圆桌发生异常: ${e.message || "请求失败"}`);
       }
     } finally {
-      setIsDiscussing(false);
-      setSpeakingExpertId(null);
-      setIsSynthesisPending(false);
-      abortControllerRef.current = null;
+      setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+      setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: null }));
+      setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+      delete discussAbortControllersRef.current[targetMeetingId];
     }
   }
 
   // 主持人点名手动触发特定专家发言
   async function handleCallExpertDirectly(expert: Expert) {
-    if (!activeMeeting || isDiscussing) return;
-    setIsDiscussing(true);
-    setSpeakingExpertId(expert.id);
+    if (!activeMeeting || discussingMeetings[activeMeetingId] || generatingConclusions[activeMeetingId]) return;
+    
+    const targetMeetingId = activeMeeting.id;
+    setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
+    setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: expert.id }));
 
     // 寻找最近的 user 提问作为本轮议题
     const lastUserMsg = [...activeMeeting.messages].reverse().find(m => m.role === "user");
@@ -854,7 +881,7 @@ export default function Home() {
       }));
 
     const controller = new AbortController();
-    abortControllerRef.current = controller;
+    discussAbortControllersRef.current[targetMeetingId] = controller;
     const signal = controller.signal;
     const contextStr = [projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
@@ -871,7 +898,7 @@ export default function Home() {
 
       const expertMessage: ChatMessage = {
         id: `msg-${Date.now()}-${expert.id}`,
-        meetingId: activeMeeting.id,
+        meetingId: targetMeetingId,
         tenantId: TENANT_ID,
         role: "expert",
         senderId: expert.id,
@@ -884,7 +911,7 @@ export default function Home() {
 
       const nextMsgs = [...activeMeeting.messages, expertMessage];
       const nextMeetingState = { ...activeMeeting, messages: nextMsgs };
-      setMeetings(prev => prev.map(m => m.id === activeMeetingId ? nextMeetingState : m));
+      setMeetings(prev => prev.map(m => m.id === targetMeetingId ? nextMeetingState : m));
       await storage.saveMeeting(TENANT_ID, nextMeetingState);
 
     } catch (e: any) {
@@ -892,17 +919,19 @@ export default function Home() {
         alert("点名专家发言失败: " + e.message);
       }
     } finally {
-      setIsDiscussing(false);
-      setSpeakingExpertId(null);
-      abortControllerRef.current = null;
+      setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+      setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: null }));
+      delete discussAbortControllersRef.current[targetMeetingId];
     }
   }
 
   // 主持人手动终结会议，输出汇总
   async function handleManualSynthesize() {
-    if (!activeMeeting || isDiscussing) return;
-    setIsDiscussing(true);
-    setIsSynthesisPending(true);
+    if (!activeMeeting || discussingMeetings[activeMeetingId] || generatingConclusions[activeMeetingId]) return;
+    
+    const targetMeetingId = activeMeeting.id;
+    setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
+    setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
 
     const lastUserMsg = [...activeMeeting.messages].reverse().find(m => m.role === "user");
     const userQuestion = lastUserMsg ? lastUserMsg.content : "关于当前的项目的整体评审";
@@ -920,7 +949,7 @@ export default function Home() {
       }));
 
     const controller = new AbortController();
-    abortControllerRef.current = controller;
+    discussAbortControllersRef.current[targetMeetingId] = controller;
     const signal = controller.signal;
     const contextStr = [projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
@@ -929,7 +958,7 @@ export default function Home() {
       
       const modMessage: ChatMessage = {
         id: `msg-${Date.now()}-mod`,
-        meetingId: activeMeeting.id,
+        meetingId: targetMeetingId,
         tenantId: TENANT_ID,
         role: "moderator",
         senderName: "主持人",
@@ -945,7 +974,7 @@ export default function Home() {
 
       const finalMessages = [...activeMeeting.messages, modMessage];
       const nextMeetingState = { ...activeMeeting, messages: finalMessages };
-      setMeetings(prev => prev.map(m => m.id === activeMeetingId ? nextMeetingState : m));
+      setMeetings(prev => prev.map(m => m.id === targetMeetingId ? nextMeetingState : m));
       await storage.saveMeeting(TENANT_ID, nextMeetingState);
 
     } catch (e: any) {
@@ -953,10 +982,76 @@ export default function Home() {
         alert("生成主持人汇总失败: " + e.message);
       }
     } finally {
-      setIsDiscussing(false);
-      setIsSynthesisPending(false);
-      abortControllerRef.current = null;
+      setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+      setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+      delete discussAbortControllersRef.current[targetMeetingId];
     }
+  }
+
+  // --- 结论相关处理 ---
+  async function handleGenerateConclusion() {
+    if (!activeMeeting || activeMeeting.messages.length === 0 || generatingConclusions[activeMeetingId]) return;
+    
+    const targetMeetingId = activeMeeting.id;
+    setGeneratingConclusions(prev => ({ ...prev, [targetMeetingId]: true }));
+    
+    const controller = new AbortController();
+    conclusionAbortControllersRef.current[targetMeetingId] = controller;
+    const signal = controller.signal;
+
+    try {
+      const activeConfig = engineConfigs.find(c => c.id === activeEngineId);
+      const res = await fetch("/api/discussions/conclusion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationHistory: activeMeeting.messages,
+          engineConfig: activeConfig,
+        }),
+        signal,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      
+      const nextMeeting = { ...activeMeeting, finalConclusion: data.conclusion };
+      setMeetings(prev => prev.map(m => m.id === targetMeetingId ? nextMeeting : m));
+      await storage.saveMeeting(TENANT_ID, nextMeeting);
+      
+      setUnlockedComposers(prev => ({ ...prev, [targetMeetingId]: false }));
+      
+      setTimeout(() => {
+        if (chatThreadRef.current) {
+          chatThreadRef.current.scrollTop = chatThreadRef.current.scrollHeight;
+        }
+      }, 100);
+    } catch (e: any) {
+      if (e.name !== "AbortError" && !signal.aborted) {
+        alert("提炼结论失败: " + e.message);
+      }
+    } finally {
+      setGeneratingConclusions(prev => ({ ...prev, [targetMeetingId]: false }));
+      delete conclusionAbortControllersRef.current[targetMeetingId];
+    }
+  }
+
+  async function handleSaveConclusion() {
+    if (!activeMeeting) return;
+    const targetMeetingId = activeMeeting.id;
+    const nextMeeting = { ...activeMeeting, finalConclusion: conclusionDraft };
+    setMeetings(prev => prev.map(m => m.id === targetMeetingId ? nextMeeting : m));
+    await storage.saveMeeting(TENANT_ID, nextMeeting);
+    setIsEditingConclusion(false);
+  }
+
+  function handleUnlockComposer() {
+    if (!activeMeeting) return;
+    setUnlockedComposers(prev => ({ ...prev, [activeMeeting.id]: true }));
+    setTimeout(() => {
+      // scroll to bottom
+      if (chatThreadRef.current) {
+        chatThreadRef.current.scrollTop = chatThreadRef.current.scrollHeight;
+      }
+    }, 100);
   }
 
   // 辅助函数
@@ -1077,18 +1172,22 @@ export default function Home() {
           onSubmit={(e) => void handleSubmitDiscussion(e)}
         >
         {/* 左侧栏一：会议列表空间 */}
-        <section className={`panel side-panel ${isSidebarCollapsed ? "is-collapsed" : ""}`}>
+        <section className={`panel side-panel ${isSidebarCollapsed ? "is-collapsed" : ""}`} style={{ position: "relative" }}>
+          <button
+            className="sidebar-collapse-tab"
+            type="button"
+            onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+            title={isSidebarCollapsed ? "展开会议空间" : "收起会议空间"}
+          >
+            <span style={{ transform: isSidebarCollapsed ? "rotate(180deg)" : "none", transition: "transform 0.2s", display: "inline-block", fontSize: "12px", lineHeight: 1 }}>‹</span>
+          </button>
+          
           {isSidebarCollapsed ? (
-            <button
-              aria-label="展开会议列表"
-              className="panel-rail"
-              type="button"
-              onClick={() => setIsSidebarCollapsed(false)}
-            >
+            <div className="panel-rail">
               <span className="rail-count">{meetings.length}</span>
               <span>会议</span>
-              <span aria-hidden="true" style={{ transform: "rotate(-90deg)", display: "inline-block" }}>›</span>
-            </button>
+              <span aria-hidden="true" style={{ transform: "rotate(-90deg)", display: "inline-block" }}>•</span>
+            </div>
           ) : (
             <div className="meeting-section">
               <div className="panel-heading side-panel-heading">
@@ -1101,14 +1200,6 @@ export default function Home() {
                     title="新建会议室"
                   >
                     +
-                  </button>
-                  <button
-                    aria-label="收起会议空间"
-                    className="panel-toggle-button"
-                    type="button"
-                    onClick={() => setIsSidebarCollapsed(true)}
-                  >
-                    ‹
                   </button>
                 </div>
               </div>
@@ -1166,7 +1257,7 @@ export default function Home() {
               <div className="role-list">
                 {displayExperts.map((expert) => {
                   const isSelected = activeMeeting?.expertIds.includes(expert.id) ?? false;
-                  const isSpeaking = speakingExpertId === expert.id;
+                  const isSpeaking = activeMeetingId ? speakingExpertIds[activeMeetingId] === expert.id : false;
 
                   return (
                     <div
@@ -1219,7 +1310,7 @@ export default function Home() {
                               min="1"
                               max="5"
                               value={expert.debateIntensity}
-                              disabled={isDiscussing}
+                              disabled={activeMeetingId ? discussingMeetings[activeMeetingId] : false}
                               onChange={async (e) => {
                                 const val = Number(e.target.value);
                                 if (expert.isCustom) {
@@ -1237,7 +1328,7 @@ export default function Home() {
                         </div>
 
                         {/* 主持人点名模式：如果专家参会了，且非发言状态，显示点名发言按钮 */}
-                        {activeMeeting?.turnOrderMode === "manual" && isSelected && !isDiscussing && (
+                        {activeMeeting?.turnOrderMode === "manual" && isSelected && !(activeMeetingId ? discussingMeetings[activeMeetingId] : false) && (
                           <button
                             className="btn-small-action active"
                             type="button"
@@ -1283,7 +1374,7 @@ export default function Home() {
             </div>
             <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
               {/* 点名模式下，如果专家发过言但还未总结，允许手动一键总结 */}
-              {activeMeeting?.turnOrderMode === "manual" && !isDiscussing && activeMeeting.messages.length > 0 && (
+              {activeMeeting?.turnOrderMode === "manual" && !(activeMeetingId ? discussingMeetings[activeMeetingId] : false) && activeMeeting.messages.length > 0 && (
                 <button
                   className="btn-small-action"
                   type="button"
@@ -1389,15 +1480,15 @@ export default function Home() {
               </div>
             )}
 
-            {speakingExpertId && (
+            {speakingExpertIds[activeMeetingId] && (
               <article className="chat-message expert">
                 <div className="message-avatar">
-                  {allExperts.find(e => e.id === speakingExpertId)?.name.slice(0, 2) || "AI"}
+                  {allExperts.find(e => e.id === speakingExpertIds[activeMeetingId])?.name.slice(0, 2) || "AI"}
                 </div>
                 <div className="message-body">
                   <div className="thinking-card" style={{ borderRadius: "8px" }}>
                     <div className="thinking-loader">
-                      <strong>{allExperts.find(e => e.id === speakingExpertId)?.name}</strong> 正在审视议题
+                      <strong>{allExperts.find(e => e.id === speakingExpertIds[activeMeetingId])?.name}</strong> 正在审视议题
                       <div className="dot-pulse">
                         <span />
                         <span />
@@ -1412,7 +1503,7 @@ export default function Home() {
               </article>
             )}
 
-            {isSynthesisPending && (
+            {synthesisPendingMeetings[activeMeetingId] && (
               <article className="chat-message moderator">
                 <div className="message-avatar">主持</div>
                 <div className="message-body">
@@ -1433,12 +1524,76 @@ export default function Home() {
               </article>
             )}
 
+            {/* 提炼/更新结论触发器已移至底栏胶囊控制台 */}
+
+            {generatingConclusions[activeMeetingId] && (
+              <div style={{ display: "flex", justifyContent: "center", padding: "20px 0 40px" }}>
+                <div className="thinking-card" style={{ borderStyle: "solid", borderColor: "var(--amber)", borderRadius: "999px", display: "inline-flex", alignItems: "center", gap: "12px" }}>
+                  <div className="thinking-loader" style={{ margin: 0 }}>
+                    <strong style={{ color: "var(--amber)" }}>正在提炼最终结论</strong>
+                    <div className="dot-pulse">
+                      <span /><span /><span />
+                    </div>
+                  </div>
+                  <button className="ghost-button" onClick={handleAbortConclusion} style={{ fontSize: "12px", padding: "2px 8px", minHeight: "24px", color: "var(--muted)", borderLeft: "1px solid var(--line)" }}>
+                    ⏹️ 取消
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 最终结论展示/编辑面板 (讨论解锁时不展示) */}
+            {activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && (
+              <div className="conclusion-panel" style={{ 
+                margin: "20px 18px 40px", 
+                padding: "24px", 
+                border: "2px solid var(--amber)", 
+                borderRadius: "12px", 
+                background: "var(--amber-soft)",
+                position: "relative" 
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", borderBottom: "1px solid rgba(212,175,55,0.3)", paddingBottom: "12px" }}>
+                  <h3 style={{ margin: 0, color: "#684c08", display: "flex", alignItems: "center", gap: "8px", fontSize: "16px" }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+                    会议最终结论
+                  </h3>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button className="ghost-button" onClick={() => { setConclusionDraft(activeMeeting.finalConclusion || ""); setIsEditingConclusion(true); }} style={{ fontSize: "12px", padding: "4px 12px", height: "auto", minHeight: "28px", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                      编辑
+                    </button>
+                  </div>
+                </div>
+                
+                {isEditingConclusion ? (
+                  <div>
+                    <textarea 
+                      value={conclusionDraft} 
+                      onChange={e => setConclusionDraft(e.target.value)}
+                      style={{ width: "100%", height: "200px", padding: "12px", borderRadius: "8px", border: "1px solid var(--line-strong)", resize: "vertical", fontFamily: "inherit", fontSize: "14px", lineHeight: 1.6 }}
+                    />
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
+                      <button className="ghost-button" onClick={() => setIsEditingConclusion(false)}>取消</button>
+                      <button className="primary-button" onClick={handleSaveConclusion}>保存结论</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="markdown-body" style={{ fontSize: "14px", color: "var(--ink)" }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                      {activeMeeting.finalConclusion}
+                    </ReactMarkdown>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div ref={chatEndRef} />
           </section>
 
           {/* 附件上传 */}
           <div
             className={`composer-shell ${isDraggingSources ? "is-dragging" : ""}`}
+            style={{ position: "relative" }}
             onDragLeave={() => setIsDraggingSources(false)}
             onDragOver={(e) => {
               e.preventDefault();
@@ -1450,6 +1605,33 @@ export default function Home() {
               void addSourceFiles(e.dataTransfer.files);
             }}
           >
+            {/* 结论锁定蒙版 */}
+            {activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && (
+              <div style={{
+                position: "absolute",
+                top: 0, left: 0, right: 0, bottom: 0,
+                background: "rgba(255,254,250,0.85)",
+                backdropFilter: "blur(4px)",
+                zIndex: 20,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: "12px",
+                border: "1px solid var(--line)",
+                gap: "12px"
+              }}>
+                <span style={{ fontSize: "15px", fontWeight: 600, color: "var(--ink)", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                  本场会议已得出最终结论，讨论已归档
+                </span>
+                <button className="ghost-button" onClick={handleUnlockComposer} style={{ background: "var(--surface-strong)", border: "1px solid var(--line-strong)", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+                  解除归档，继续讨论
+                </button>
+              </div>
+            )}
+
             <div className="composer-drag-hint">
               <strong>松手添加附件</strong>
               <span>文本和图片将载入大模型上下文</span>
@@ -1487,9 +1669,9 @@ export default function Home() {
             <div className="composer-row">
               <textarea
                 className="composer-input"
-                placeholder="抛出全新议题，或上传相关资料..."
+                placeholder={generatingConclusions[activeMeetingId] ? "正在提炼最终结论，请稍候..." : "抛出全新议题，或上传相关资料..."}
                 value={question}
-                disabled={isDiscussing}
+                disabled={discussingMeetings[activeMeetingId] || generatingConclusions[activeMeetingId]}
                 onChange={(e) => setQuestion(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -1509,63 +1691,117 @@ export default function Home() {
                     +
                   </button>
 
-                  {/* 内嵌的会议设置项 (蓝框位置) */}
+                  {/* 内嵌的会议设置项 (胶囊控制台方案) */}
                   {activeMeeting && (
-                    <div style={{ display: "flex", gap: "4px" }}>
-                      <select 
-                        className="toolbar-select" 
-                        value={activeEngineId} 
-                        onChange={(e) => void handleSelectEngine(e.target.value)}
-                        title="选择模型引擎"
-                      >
-                        <option value="system-env">系统模型</option>
-                        {engineConfigs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                      </select>
+                    <div style={{ display: "flex", gap: "8px", padding: "4px 8px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "8px", alignItems: "center" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>主持</span>
+                        <select
+                          className="toolbar-select"
+                          value={activeMeeting.moderatorId}
+                          onChange={(e) => void updateActiveMeeting({ moderatorId: e.target.value })}
+                          title="主持风格"
+                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
+                        >
+                          {moderatorModes.map(m => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
+                        </select>
+                      </div>
 
-                      <select 
-                        className="toolbar-select"
-                        value={activeMeeting.turnOrderMode}
-                        onChange={(e) => void updateActiveMeeting({ turnOrderMode: e.target.value as any })}
-                        title="发言顺序"
-                      >
-                        <option value="sequential">顺序发言</option>
-                        <option value="relevance">动态指派</option>
-                        <option value="manual">手动点名</option>
-                      </select>
+                      <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
 
-                      <select
-                        className="toolbar-select"
-                        value={activeMeeting.globalDebateIntensity}
-                        onChange={(e) => void updateActiveMeeting({ globalDebateIntensity: Number(e.target.value) })}
-                        title="对抗强度"
-                      >
-                        <option value="1">火力: 1 (温和)</option>
-                        <option value="2">火力: 2 (建设)</option>
-                        <option value="3">火力: 3 (客观)</option>
-                        <option value="4">火力: 4 (尖锐)</option>
-                        <option value="5">火力: 5 (极限)</option>
-                      </select>
+                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>机制</span>
+                        <select 
+                          className="toolbar-select"
+                          value={activeMeeting.turnOrderMode}
+                          onChange={(e) => void updateActiveMeeting({ turnOrderMode: e.target.value as any })}
+                          title="发言顺序"
+                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
+                        >
+                          <option value="sequential">顺序发言</option>
+                          <option value="relevance">动态指派</option>
+                          <option value="manual">手动点名</option>
+                        </select>
+                      </div>
 
-                      <select
-                        className="toolbar-select"
-                        value={activeMeeting.moderatorId}
-                        onChange={(e) => void updateActiveMeeting({ moderatorId: e.target.value })}
-                        title="主持风格"
-                      >
-                        {moderatorModes.map(m => (
-                          <option key={m.id} value={m.id}>主持: {m.name}</option>
-                        ))}
-                      </select>
+                      <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
+
+                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>火力</span>
+                        <select
+                          className="toolbar-select"
+                          value={activeMeeting.globalDebateIntensity}
+                          onChange={(e) => void updateActiveMeeting({ globalDebateIntensity: Number(e.target.value) })}
+                          title="对抗强度"
+                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
+                        >
+                          <option value="1">1 (温和)</option>
+                          <option value="2">2 (建设)</option>
+                          <option value="3">3 (客观)</option>
+                          <option value="4">4 (尖锐)</option>
+                          <option value="5">5 (极限)</option>
+                        </select>
+                      </div>
+
+                      <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
+                      
+                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>引擎</span>
+                        <select 
+                          className="toolbar-select" 
+                          value={activeEngineId} 
+                          onChange={(e) => void handleSelectEngine(e.target.value)}
+                          title="选择模型引擎"
+                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
+                        >
+                          <option value="system-env">系统内置</option>
+                          {engineConfigs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                      </div>
+
+                      {/* 结论触发按钮（集成在控制台最右侧） */}
+                      {activeMeeting && activeMeeting.messages.length > 2 && (!activeMeeting.finalConclusion || unlockedComposers[activeMeetingId]) && (
+                        <>
+                          <div style={{ width: "1px", height: "12px", background: "var(--line)", marginLeft: "4px" }} />
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={handleGenerateConclusion}
+                            disabled={generatingConclusions[activeMeetingId]}
+                            style={{ 
+                              fontSize: "12px", 
+                              padding: "2px 8px", 
+                              height: "auto", 
+                              minHeight: "24px", 
+                              color: "var(--amber)", 
+                              fontWeight: 600, 
+                              display: "flex", 
+                              alignItems: "center", 
+                              gap: "4px",
+                              opacity: generatingConclusions[activeMeetingId] ? 0.5 : 1
+                            }}
+                            title={activeMeeting.finalConclusion ? "更新最终结论" : "提炼最终结论"}
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                            {generatingConclusions[activeMeetingId] ? "提炼中..." : (activeMeeting.finalConclusion ? "更新结论" : "提炼结论")}
+                          </button>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
 
-                {isDiscussing ? (
+                {(activeMeetingId && (discussingMeetings[activeMeetingId] || generatingConclusions[activeMeetingId])) ? (
                   <button
-                    aria-label="叫停讨论"
+                    aria-label="叫停"
                     className="btn-abort"
                     type="button"
-                    onClick={handleAbort}
+                    onClick={() => {
+                      if (activeMeetingId && discussingMeetings[activeMeetingId]) handleAbort();
+                      if (activeMeetingId && generatingConclusions[activeMeetingId]) handleAbortConclusion();
+                    }}
                   >
                     <span style={{ fontSize: "14px" }}>■</span>
                   </button>

@@ -103,7 +103,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave }: Expe
               placeholder="可以填入该智能体专属的完整 System Setting。"
               value={draft.systemPrompt || ""} 
               onChange={e => setDraft({...draft, systemPrompt: e.target.value})} 
-              style={{ width: "100%", height: "260px", fontFamily: "monospace", resize: "vertical", fontSize: "13px", lineHeight: 1.5 }}
+              style={{ width: "100%", height: "120px", fontFamily: "monospace", resize: "vertical", fontSize: "13px", lineHeight: 1.5 }}
             />
           </label>
 

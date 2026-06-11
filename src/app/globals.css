@@ -246,6 +246,31 @@ h3 {
   color: currentcolor;
 }
 
+.sidebar-collapse-tab {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 48px;
+  border: 1px solid var(--line);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  z-index: 10;
+  box-shadow: -1px 0 4px rgba(0,0,0,0.03);
+}
+
+.sidebar-collapse-tab:hover {
+  background: var(--surface-strong);
+  color: var(--ink);
+}
+
 .panel-rail {
   display: flex;
   width: 100%;
@@ -261,7 +286,6 @@ h3 {
 }
 
 .panel-rail:hover {
-  background: rgb(25 23 20 / 5%);
   color: var(--ink);
 }
 

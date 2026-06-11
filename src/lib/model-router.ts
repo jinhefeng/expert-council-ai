@@ -393,3 +393,44 @@ ${candidateExperts.map((exp) => `- ID: ${exp.id}, 专家名称: ${exp.name}, 判
   const matched = candidateExperts.find((c) => c.id === cleanedId);
   return matched ? matched.id : candidateExperts[0].id;
 }
+
+// 4. 提炼全场最终结论
+export async function getFinalConclusion({
+  conversationHistory = [],
+  engineConfig,
+}: {
+  conversationHistory: ChatMessage[];
+  engineConfig?: LLMEngineConfig;
+}): Promise<string> {
+  const activeEngine = engineConfig || getSystemEngine();
+  
+  if (!activeEngine) {
+    throw new Error(
+      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+    );
+  }
+
+  const systemPrompt = `你是一名高阶会议纪要与战略复盘专家。
+IMPORTANT: 必须全程使用中文（简体中文）进行回答！
+请根据以下所有的会议历史记录，全面客观地提取出本场会议的“最终结论”。
+输出要求：
+1. 结论必须是对整场会议核心共识、遗留分歧、后续行动的精炼总结。
+2. 必须直接输出纯文本的 Markdown 格式（建议使用二级/三级标题、加粗、列表），不需要包裹 JSON，也不要包含多余的客套话。
+3. 语言必须高度专业、客观、不偏不倚，具有“一锤定音”的总裁办汇报风格。`;
+
+  const historyMessages = formatConversationHistoryForLLM(conversationHistory);
+
+  const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+    { role: "user", content: "请根据上述会议全程记录，提炼一份极具执行指导意义的最终结论（仅输出 Markdown）。" }
+  ];
+
+  const responseText = await callLLM({
+    config: activeEngine,
+    messages: promptMessages,
+    temperature: 0.3, // 降低温度以保证结论的确定性与客观性
+  });
+
+  return responseText.trim();
+}
