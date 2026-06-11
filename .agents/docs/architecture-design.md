@@ -55,7 +55,7 @@
 │       ├── model-router.ts       # 【核心】统一模型适配与编排引擎
 │       └── types.ts              # 核心 TS 接口与类型定义
 ├── roles/                        # 本地化管理的知识库（Markdown形式预设专家数据）
-├── .agent/
+├── .agents/
 │   └── docs/                     # 所有规范文档、流程定义汇总区
 └── README.md                     # 项目主说明
 ```

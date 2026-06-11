@@ -14,6 +14,6 @@
 ## ✅ 已完成 (Done)
 *在完成任务后，将对应的条目移至此处以留档。*
 
-- [x] (2026-06-11) 初始化项目的全局任务文档池 `.agent/docs/project-tasks.md`
+- [x] (2026-06-11) 初始化项目的全局任务文档池 `.agents/docs/project-tasks.md`
 - [x] (2026-06-11) 根据需求，在系统中创建了 Task Manager 的机制设定。
-- [x] (2026-06-12) 设计并应用 Task Manager Skill 机制（通过 .agent/rules 配置）。
+- [x] (2026-06-12) 设计并应用 Task Manager Skill 机制（通过 .agents/rules 配置）。

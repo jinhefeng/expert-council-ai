@@ -63,9 +63,9 @@ DASHSCOPE_MODEL=qwen-plus
 
 | 文档分类 | 文件路径 | 说明 |
 | --- | --- | --- |
-| 📖 **产品使用说明** | [product-manual.md](.agent/docs/product-manual.md) | 给最终用户看：如何设置专家角色、开启议题与阅读讨论输出。 |
-| 🏗 **技术架构设计** | [architecture-design.md](.agent/docs/architecture-design.md) | 给开发人员看：系统的核心调度链路、API Route 以及 `model-router` 机制。 |
-| ⚙️ **业务功能总览** | [functional-spec.md](.agent/docs/functional-spec.md) | 给项目维护者看：整理合并后的交互流、核心流程约束与边缘错误处理规范。 |
+| 📖 **产品使用说明** | [product-manual.md](.agents/docs/product-manual.md) | 给最终用户看：如何设置专家角色、开启议题与阅读讨论输出。 |
+| 🏗 **技术架构设计** | [architecture-design.md](.agents/docs/architecture-design.md) | 给开发人员看：系统的核心调度链路、API Route 以及 `model-router` 机制。 |
+| ⚙️ **业务功能总览** | [functional-spec.md](.agents/docs/functional-spec.md) | 给项目维护者看：整理合并后的交互流、核心流程约束与边缘错误处理规范。 |
 
 ## 下一步计划 (TODO)
 

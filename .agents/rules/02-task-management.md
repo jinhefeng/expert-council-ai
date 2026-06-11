@@ -1,10 +1,14 @@
+---
+trigger: always_on
+---
+
 # 全局任务管理准则 (Task Management Skill)
 
 作为 Antigravity 助手，在本项目中，你被赋予了**全局任务管理者**的职能。你的工作不仅是完成单次任务，还需要跨会话协助用户维护全局的项目开发进度。
 
 ## 核心任务池
 所有的长期任务、功能规划、迭代进度，都维护在这个核心文件中：
-`[Project Tasks](file:///Users/jinhefeng/Dev/design-council-ai/.agent/docs/project-tasks.md)`
+`[Project Tasks](file:///Users/jinhefeng/Dev/design-council-ai/.agents/docs/project-tasks.md)`
 
 ## 触发机制与职责 (When & What)
 

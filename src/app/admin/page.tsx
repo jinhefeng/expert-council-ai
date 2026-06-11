@@ -57,6 +57,10 @@ export default function AdminPage() {
   const [expertModalMode, setExpertModalMode] = useState<"create" | "edit">("create");
   const [expertDraft, setExpertDraft] = useState<Partial<Expert>>({});
 
+  // 全站配置导入 Modal
+  const [isFullImportModalOpen, setIsFullImportModalOpen] = useState(false);
+  const [fullImportDraft, setFullImportDraft] = useState("");
+
   // 全局确认 Modal
   const [confirmConfig, setConfirmConfig] = useState<{isOpen: boolean, title: string, message: string, onConfirm: () => void}>({
     isOpen: false, title: "", message: "", onConfirm: () => {}
@@ -186,6 +190,60 @@ export default function AdminPage() {
     }
   }
 
+  // --- 全站配置导入导出 ---
+  function handleExportFullConfig() {
+    const fullConfig = {
+      version: "1.0",
+      type: "design-council-ai-full-config",
+      engineConfigs,
+      systemOverrides,
+      customExperts,
+      userProfile,
+      llmParams,
+      systemPrompts,
+      businessDefaults
+    };
+    const exportData = JSON.stringify(fullConfig, null, 2);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(exportData).then(() => {
+        alert("全站配置已成功打包并复制到剪贴板！");
+      }).catch(() => {
+        alert("配置打包成功，但未能自动复制到剪贴板，请检查浏览器权限。");
+      });
+    }
+  }
+
+  async function handleImportFullConfig() {
+    if (!fullImportDraft.trim()) return;
+    try {
+      const data = JSON.parse(fullImportDraft);
+      if (data.type !== "design-council-ai-full-config") {
+        alert("导入失败：该 JSON 数据不是合法的全站配置格式。");
+        return;
+      }
+      
+      // 执行反序列化并保存
+      if (data.engineConfigs) await storage.saveEngineConfigs(TENANT_ID, data.engineConfigs);
+      if (data.systemOverrides) await storage.saveSystemExpertsOverrides(TENANT_ID, data.systemOverrides);
+      if (data.customExperts && Array.isArray(data.customExperts)) {
+        for (const expert of data.customExperts) {
+          await storage.saveCustomExpert(TENANT_ID, expert);
+        }
+      }
+      if (data.userProfile) await storage.saveUserProfile(TENANT_ID, data.userProfile);
+      if (data.llmParams) await storage.saveLLMParamsConfig(TENANT_ID, data.llmParams);
+      if (data.systemPrompts) await storage.saveSystemPromptsConfig(TENANT_ID, data.systemPrompts);
+      if (data.businessDefaults) await storage.saveBusinessDefaultsConfig(TENANT_ID, data.businessDefaults);
+
+      setIsFullImportModalOpen(false);
+      setFullImportDraft("");
+      alert("全站配置导入成功！页面即将刷新以应用最新配置。");
+      window.location.reload();
+    } catch (e) {
+      alert("导入失败：JSON 格式不正确。");
+    }
+  }
+
   // --- 组织专家库管理 ---
   function handleRestoreSystemExpert(id: string) {
     confirm("恢复内置智能体设定", "确定要清除所有的自定义修改，并将该智能体恢复为系统默认出厂配置吗？", async () => {
@@ -291,6 +349,12 @@ export default function AdminPage() {
           <div className="status-group">
             <span className="status-chip">{allVisibleExperts.length} 个组织智能体</span>
             <span className="status-chip">{engineConfigs.length} 个自定义模型</span>
+            <button className="ghost-button" style={{ display: "inline-flex", alignItems: "center", minHeight: "30px", padding: "0 12px", borderRadius: "999px", fontSize: "12px", border: "1px solid var(--line)", background: "var(--surface)" }} onClick={() => { setFullImportDraft(""); setIsFullImportModalOpen(true); }}>
+              导入系统配置
+            </button>
+            <button className="ghost-button" style={{ display: "inline-flex", alignItems: "center", minHeight: "30px", padding: "0 12px", borderRadius: "999px", fontSize: "12px", border: "1px solid var(--line)", background: "var(--surface)" }} onClick={handleExportFullConfig}>
+              导出系统配置
+            </button>
             <a href="/" className="ghost-button" style={{ display: "inline-flex", alignItems: "center", minHeight: "30px", padding: "0 12px", textDecoration: "none", borderRadius: "999px", fontSize: "12px", border: "1px solid var(--line)", background: "var(--surface)" }}>
               ← 返回主会场
             </a>
@@ -630,6 +694,44 @@ export default function AdminPage() {
               <div className="modal-actions" style={{ padding: "24px 0", marginTop: "8px" }}>
                 <button type="button" className="ghost-button" onClick={() => setIsImportModalOpen(false)}>取消</button>
                 <button type="button" className="primary-button" onClick={handleImportEngineConfig}>解析并导入</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* 全站配置导入 Modal */}
+      {isFullImportModalOpen && (
+        <div className="modal-backdrop" onClick={() => setIsFullImportModalOpen(false)}>
+          <section className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">Import Full Configuration</p>
+                <h2>导入系统全站配置</h2>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setIsFullImportModalOpen(false)}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+            <div style={{ padding: "0 24px" }}>
+              <div style={{ padding: "12px", background: "var(--surface-subtle)", borderRadius: "8px", fontSize: "13px", color: "var(--muted)", marginBottom: "16px" }}>
+                导入操作将合并并覆盖现有的各项配置（包括大模型配置、提示词、大模型参数、组织内自定义专家等）。执行成功后页面将自动刷新。
+              </div>
+              <label className="compact-field">
+                <span>全量配置 JSON 文本</span>
+                <textarea 
+                  value={fullImportDraft}
+                  onChange={e => setFullImportDraft(e.target.value)}
+                  placeholder='粘贴您通过 "导出系统配置" 获得的 JSON 完整数据...'
+                  style={{ width: "100%", height: "250px", fontFamily: "monospace", resize: "vertical" }}
+                />
+              </label>
+              <div className="modal-actions" style={{ padding: "24px 0", marginTop: "8px" }}>
+                <button type="button" className="ghost-button" onClick={() => setIsFullImportModalOpen(false)}>取消</button>
+                <button type="button" className="primary-button" style={{ background: "var(--amber)", borderColor: "var(--amber)", color: "white" }} onClick={handleImportFullConfig}>确认覆盖导入</button>
               </div>
             </div>
           </section>
