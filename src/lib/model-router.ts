@@ -52,19 +52,46 @@ export async function callLLM({
     throw new Error(`引擎 "${config.name}" 未配置 API Key`);
   }
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature,
-      max_tokens: maxTokens,
-    }),
-  });
+  let response;
+  let retryCount = 0;
+  const maxRetries = 2;
+  let lastError = null;
+
+  while (retryCount <= maxRetries) {
+    try {
+      response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "Connection": "close",
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature,
+          max_tokens: maxTokens,
+        }),
+      });
+      break; // Success
+    } catch (e: any) {
+      lastError = e;
+      if (e.message && e.message.includes("fetch failed")) {
+        console.warn(`[callLLM] fetch failed (retry ${retryCount}/${maxRetries}):`, e.message);
+        retryCount++;
+        if (retryCount <= maxRetries) {
+          // Wait 2 seconds before retry
+          await new Promise(res => setTimeout(res, 2000));
+          continue;
+        }
+      }
+      throw e;
+    }
+  }
+
+  if (!response) {
+    throw lastError || new Error("模型请求完全失败");
+  }
 
   if (!response.ok) {
     const detail = await response.text();
