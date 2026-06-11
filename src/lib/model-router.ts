@@ -59,6 +59,19 @@ export async function callLLM({
 
   while (retryCount <= maxRetries) {
     try {
+      const payload: any = {
+        model,
+        messages: config.isReasoningModel ? messages.map(m => m.role === "system" ? { ...m, role: "user" } : m) : messages,
+        max_tokens: maxTokens ?? 4000,
+        ...(config.isReasoningModel ? {} : { temperature }),
+      };
+
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`\n========== [LLM Request (Sync): ${model}] ==========`);
+        console.log(JSON.stringify(payload, null, 2));
+        console.log(`====================================================\n`);
+      }
+
       response = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
@@ -66,12 +79,7 @@ export async function callLLM({
           "Content-Type": "application/json",
           "Connection": "close",
         },
-        body: JSON.stringify({
-          model,
-          messages: config.isReasoningModel ? messages.map(m => m.role === "system" ? { ...m, role: "user" } : m) : messages,
-          max_tokens: maxTokens ?? 4000,
-          ...(config.isReasoningModel ? {} : { temperature }),
-        }),
+        body: JSON.stringify(payload),
       });
       break; // Success
     } catch (e: any) {
@@ -99,6 +107,12 @@ export async function callLLM({
   }
 
   const data = await response.json();
+  
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`\n========== [LLM Response (Sync): ${model}] ==========`);
+    console.log(JSON.stringify(data, null, 2));
+    console.log(`=====================================================\n`);
+  }
   
   if (data.error) {
     throw new Error(`模型接口返回错误 (HTTP 200): ${JSON.stringify(data.error)}`);
@@ -148,6 +162,12 @@ export async function callLLMStream({
     payload.temperature = temperature;
   }
 
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`\n========== [LLM Request (Stream): ${model}] ==========`);
+    console.log(JSON.stringify(payload, null, 2));
+    console.log(`======================================================\n`);
+  }
+
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -172,21 +192,24 @@ export function formatConversationHistoryForLLM(
   const result: { role: "user" | "assistant"; content: string }[] = [];
 
   for (const msg of history) {
+    const cleanedContent = msg.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    if (!cleanedContent) continue;
+
     if (msg.role === "user") {
       result.push({
         role: "user",
-        content: msg.content,
+        content: cleanedContent,
       });
     } else if (msg.role === "expert") {
       // 携带发言专家名称，以便其他智能体明确引用关系
       result.push({
         role: "assistant",
-        content: `【${msg.senderName} (${msg.senderTitle || "专家"})】：${msg.content}`,
+        content: `【${msg.senderName} (${msg.senderTitle || "专家"})】：${cleanedContent}`,
       });
     } else if (msg.role === "moderator") {
       result.push({
         role: "assistant",
-        content: `【主持人】：${msg.content}`,
+        content: `【主持人】：${cleanedContent}`,
       });
     }
   }
@@ -270,7 +293,7 @@ export async function getExpertTurn({
   // 拼接当前这一轮的最新 User 问题以及本轮内先于此专家发言的其他专家的观点
   const currentTurnPreviousText = previousTurns.length
     ? "本轮专家讨论中，此前已发言记录：\n" +
-      previousTurns.map((turn) => `【${turn.expertName}】：${turn.content}`).join("\n\n")
+      previousTurns.map((turn) => `【${turn.expertName}】：${turn.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim()}`).join("\n\n")
     : "本轮中你是第一个发言的专家。";
 
   const currentUserTurnText = [
@@ -380,7 +403,7 @@ export async function getExpertTurnStream({
 
   const currentTurnPreviousText = previousTurns.length
     ? "本轮专家讨论中，此前已发言记录：\n" +
-      previousTurns.map((turn) => `【${turn.expertName}】：${turn.content}`).join("\n\n")
+      previousTurns.map((turn) => `【${turn.expertName}】：${turn.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim()}`).join("\n\n")
     : "本轮中你是第一个发言的专家。";
 
   const currentUserTurnText = [

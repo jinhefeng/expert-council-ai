@@ -83,6 +83,8 @@ export default function Home() {
   const [meetingModalMode, setMeetingModalMode] = useState<"create" | "edit">("create");
   const [newMeetingDraft, setNewMeetingDraft] = useState<Partial<Meeting>>({});
   const [isGeneratingMeetingDesc, setIsGeneratingMeetingDesc] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingContent, setEditingContent] = useState<string>("");
 
   async function handleGenerateMeetingDesc() {
     if (!newMeetingDraft.name?.trim()) return;
@@ -852,21 +854,27 @@ export default function Home() {
   }
 
   // 圆桌讨论主提交入口
-  async function handleSubmitDiscussion(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!activeMeeting || discussingMeetings[activeMeetingId] || generatingConclusions[activeMeetingId]) return;
+  async function handleSubmitDiscussion(
+    event?: FormEvent<HTMLFormElement>,
+    editParams?: { targetMeetingId: string; userQuestion: string; baseHistory: ChatMessage[]; baseSources: any[] }
+  ) {
+    if (event) event.preventDefault();
+    
+    const targetMeetingId = editParams ? editParams.targetMeetingId : activeMeeting?.id;
+    const targetMeeting = meetings.find(m => m.id === targetMeetingId);
+    if (!targetMeetingId || !targetMeeting || discussingMeetings[targetMeetingId] || generatingConclusions[targetMeetingId]) return;
 
-    const userQuestion = question.trim();
+    const userQuestion = editParams ? editParams.userQuestion.trim() : question.trim();
     if (!userQuestion) return;
 
-    const targetMeetingId = activeMeeting.id;
-
     setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
-    setQuestion("");
-    setSources([]);
+    if (!editParams) {
+      setQuestion("");
+      setSources([]);
+    }
 
     // 缓存这轮提问发生前的整场历史对话列表
-    const conversationHistory = activeMeeting.messages;
+    const conversationHistory = editParams ? editParams.baseHistory : targetMeeting.messages;
 
     // 1. 创建 User 消息
     const userMessage: ChatMessage = {
@@ -877,16 +885,22 @@ export default function Home() {
       senderName: userProfile.name,
       senderTitle: userProfile.title,
       content: userQuestion,
-      sources: [...sources],
+      sources: editParams ? [...editParams.baseSources] : [...sources],
       createdAt: Date.now(),
     };
 
-    const updatedMessages = [...activeMeeting.messages, userMessage];
-    const nextMeetingState = { ...activeMeeting, messages: updatedMessages };
+    const updatedMessages = [...conversationHistory, userMessage];
+    const nextMeetingState = { ...targetMeeting, messages: updatedMessages };
     
     // 初始化 UI 并立刻保存（用户的话立即上屏）
     setMeetings(prev => prev.map(m => m.id === targetMeetingId ? nextMeetingState : m));
     await storage.saveMeeting(TENANT_ID, nextMeetingState);
+
+    // 强制重置滚动锁定并沉底（确保模型回复时能自动跟随）
+    isAutoScrollEnabled.current = true;
+    setTimeout(() => {
+      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, 50);
 
     // 2. 构造 Abort 监控
     const controller = new AbortController();
@@ -894,8 +908,8 @@ export default function Home() {
     const signal = controller.signal;
 
     // 获取参会的专家
-    const selectedExperts = allExperts.filter(e => activeMeeting.expertIds.includes(e.id));
-    const meetingContextStr = `会议名称：${activeMeeting.name}\n会议背景与描述：${activeMeeting.description}`;
+    const selectedExperts = allExperts.filter(e => targetMeeting.expertIds.includes(e.id));
+    const meetingContextStr = `会议名称：${targetMeeting.name}\n会议背景与描述：${targetMeeting.description}`;
     const contextStr = [meetingContextStr, projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
     // 本轮发言缓冲
@@ -1384,6 +1398,31 @@ export default function Home() {
 
   return (
     <main className="app-shell">
+      <style dangerouslySetInnerHTML={{ __html: `
+        .message-hover-wrapper .message-edit-btn {
+          opacity: 0;
+          transition: opacity 0.2s, background 0.2s, color 0.2s;
+          background: transparent;
+          border: none;
+          color: var(--muted);
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 6px;
+          border-radius: 6px;
+          flex-shrink: 0;
+          margin-bottom: 2px;
+        }
+        .message-hover-wrapper:hover .message-edit-btn {
+          opacity: 0.6;
+        }
+        .message-hover-wrapper .message-edit-btn:hover {
+          opacity: 1;
+          background: var(--surface-strong);
+          color: var(--ink);
+        }
+      `}} />
       <header className="app-header">
         <div className="header-inner">
           <div className="brand-lockup">
@@ -1749,38 +1788,95 @@ export default function Home() {
                                 )}
                               </div>
                             )}
-                            
-                            {(!isThinkingDone && (isTTFB || isStartingThink || thinkingContent.length > 0)) && (
-                              <div className="thinking-card" style={{ marginBottom: "8px", background: "transparent", border: "none", padding: "0" }}>
-                                <div className="thinking-loader" style={{ margin: 0, opacity: 0.7 }}>
-                                  <span>
-                                    {isTTFB ? "正在审视议题" : "正在深度思考"}
-                                  </span>
-                                  <div className="dot-pulse" style={{ marginLeft: "4px" }}>
-                                    <span />
-                                    <span />
-                                    <span />
-                                  </div>
-                                </div>
-                                {isTTFB && (
-                                  <div style={{ fontSize: "12px", color: "var(--muted)", marginTop: "4px" }}>
-                                    正在结合个人对抗强度与会议历史多轮对话上下文编排论点...
-                                  </div>
-                                )}
-                                {thinkingContent && (
-                                  <div style={{ fontSize: "13px", color: "var(--muted)", whiteSpace: "pre-wrap", fontStyle: "italic", marginTop: "8px", paddingLeft: "12px", borderLeft: "2px solid var(--line)" }}>
-                                    {thinkingContent}
-                                  </div>
-                                )}
-                              </div>
-                            )}
 
-                            {displayContent && (
-                              <div className="message-content markdown-body" style={{ fontSize: "14px", position: "relative" }}>
-                                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
-                                  {displayContent}
-                                </ReactMarkdown>
+                            {editingMessageId === message.id ? (
+                              <div className="edit-message-container" style={{ marginTop: "4px", width: "100%", display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start" }}>
+                                <textarea
+                                  value={editingContent}
+                                  onChange={(e) => setEditingContent(e.target.value)}
+                                  autoFocus
+                                  style={{
+                                    width: "100%", maxWidth: "600px", minHeight: "80px", padding: "12px", borderRadius: "12px",
+                                    border: "1px solid var(--line)", background: "var(--surface)",
+                                    fontSize: "14px", fontFamily: "inherit", resize: "vertical",
+                                    boxShadow: "0 2px 8px rgba(0,0,0,0.05)", outline: "none"
+                                  }}
+                                />
+                                <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+                                  <button
+                                    onClick={() => setEditingMessageId(null)}
+                                    style={{ padding: "6px 14px", borderRadius: "6px", border: "1px solid var(--line)", background: "var(--surface)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}
+                                  >
+                                    取消
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setEditingMessageId(null);
+                                      const msgIndex = activeMeeting!.messages.findIndex(m => m.id === message.id);
+                                      const baseHistory = activeMeeting!.messages.slice(0, msgIndex);
+                                      handleSubmitDiscussion(undefined, {
+                                        targetMeetingId: activeMeetingId!,
+                                        userQuestion: editingContent,
+                                        baseHistory: baseHistory,
+                                        baseSources: message.sources || []
+                                      });
+                                    }}
+                                    style={{ padding: "6px 14px", borderRadius: "6px", border: "none", background: "var(--ink)", color: "var(--surface)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}
+                                  >
+                                    保存并重新生成
+                                  </button>
+                                </div>
                               </div>
+                            ) : (
+                              <>
+                                {(!isThinkingDone && (isTTFB || isStartingThink || thinkingContent.length > 0)) && (
+                                  <div className="thinking-card" style={{ marginBottom: "8px", background: "transparent", border: "none", padding: "0" }}>
+                                    <div className="thinking-loader" style={{ margin: 0, opacity: 0.7 }}>
+                                      <span>
+                                        {isTTFB ? "正在审视议题" : "正在深度思考"}
+                                      </span>
+                                      <div className="dot-pulse" style={{ marginLeft: "4px" }}>
+                                        <span /><span /><span />
+                                      </div>
+                                    </div>
+                                    {isTTFB && (
+                                      <div style={{ fontSize: "12px", color: "var(--muted)", marginTop: "4px" }}>
+                                        正在结合个人对抗强度与会议历史多轮对话上下文编排论点...
+                                      </div>
+                                    )}
+                                    {thinkingContent && (
+                                      <div style={{ fontSize: "13px", color: "var(--muted)", whiteSpace: "pre-wrap", fontStyle: "italic", marginTop: "8px", paddingLeft: "12px", borderLeft: "2px solid var(--line)" }}>
+                                        {thinkingContent}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {displayContent && (
+                                  <div className="message-hover-wrapper" style={{ display: "flex", alignItems: "flex-end", justifyContent: isUser ? "flex-end" : "flex-start", gap: "8px" }}>
+                                    {isUser && (
+                                      <button
+                                        className="message-edit-btn"
+                                        onClick={() => {
+                                          setEditingMessageId(message.id);
+                                          setEditingContent(message.content);
+                                        }}
+                                        title="重新编辑"
+                                      >
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                                        </svg>
+                                      </button>
+                                    )}
+                                    <div className="message-content markdown-body" style={{ fontSize: "14px", position: "relative", margin: 0 }}>
+                                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                                        {displayContent}
+                                      </ReactMarkdown>
+                                    </div>
+                                  </div>
+                                )}
+                              </>
                             )}
                           </>
                         );
