@@ -2,11 +2,33 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { LocalStorageService } from "@/lib/storage-service";
-import { Expert, LLMEngineConfig, UserProfile } from "@/lib/types";
+import { Expert, LLMEngineConfig, UserProfile, LLMParamsConfig, SystemPromptsConfig, BusinessDefaultsConfig } from "@/lib/types";
+import { DEFAULT_LLM_PARAMS, DEFAULT_SYSTEM_PROMPTS, DEFAULT_BUSINESS_DEFAULTS } from "@/lib/storage-service";
 import { experts as defaultExperts, mergeSystemExperts } from "@/lib/experts";
 import { ExpertModal } from "@/components/ExpertModal";
 
 const TENANT_ID = "default-org";
+
+
+
+
+const InfoTooltip = ({ text }: { text: string }) => (
+  <div className="info-tooltip-container" style={{ position: "relative", display: "inline-flex", marginLeft: "6px", verticalAlign: "middle", marginBottom: "2px" }}>
+    <div style={{ cursor: "help", display: "flex", alignItems: "center", justifyContent: "center", width: "14px", height: "14px", borderRadius: "50%", border: "1px solid var(--line)", background: "transparent", color: "var(--muted-light)", fontSize: "10px", fontWeight: "bold" }}>?</div>
+    <div className="info-tooltip-text" style={{ 
+      position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%) translateY(-8px)", 
+      background: "var(--ink)", color: "var(--surface)", padding: "6px 12px", 
+      borderRadius: "6px", fontSize: "12px", whiteSpace: "nowrap", fontWeight: "normal",
+      opacity: 0, visibility: "hidden", transition: "all 0.2s ease", zIndex: 100, pointerEvents: "none", boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
+    }}>
+      {text}
+      <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", border: "5px solid transparent", borderTopColor: "var(--ink)" }} />
+    </div>
+    <style dangerouslySetInnerHTML={{__html: `
+      .info-tooltip-container:hover .info-tooltip-text { opacity: 1 !important; visibility: visible !important; transform: translateX(-50%) translateY(-4px) !important; }
+    `}} />
+  </div>
+);
 
 export default function AdminPage() {
   const storage = useMemo(() => new LocalStorageService(), []);
@@ -16,6 +38,9 @@ export default function AdminPage() {
   const [systemOverrides, setSystemOverrides] = useState<Partial<Expert>[]>([]);
   const [customExperts, setCustomExperts] = useState<Expert[]>([]);
   const [userProfile, setUserProfile] = useState<UserProfile>({ name: "产品经理", title: "需求提出人" });
+  const [llmParams, setLlmParams] = useState<LLMParamsConfig>(DEFAULT_LLM_PARAMS);
+  const [systemPrompts, setSystemPrompts] = useState<SystemPromptsConfig>(DEFAULT_SYSTEM_PROMPTS);
+  const [businessDefaults, setBusinessDefaults] = useState<BusinessDefaultsConfig>(DEFAULT_BUSINESS_DEFAULTS);
   
   // 大模型表单 Modal
   const [isEngineModalOpen, setIsEngineModalOpen] = useState(false);
@@ -48,6 +73,12 @@ export default function AdminPage() {
       const allCustom = await storage.getCustomExperts(TENANT_ID);
       setCustomExperts(allCustom.filter(e => !e.meetingId));
       setUserProfile(await storage.getUserProfile(TENANT_ID));
+      setLlmParams(await storage.getLLMParamsConfig(TENANT_ID));
+      setSystemPrompts(await storage.getSystemPromptsConfig(TENANT_ID));
+      setBusinessDefaults(await storage.getBusinessDefaultsConfig(TENANT_ID));
+      setLlmParams(await storage.getLLMParamsConfig(TENANT_ID));
+      setSystemPrompts(await storage.getSystemPromptsConfig(TENANT_ID));
+      setBusinessDefaults(await storage.getBusinessDefaultsConfig(TENANT_ID));
     }
     void load();
   }, [storage]);
@@ -64,6 +95,25 @@ export default function AdminPage() {
     }
     await storage.saveUserProfile(TENANT_ID, userProfile);
     alert("保存成功！");
+  }
+
+  // --- 新增配置管理 ---
+  async function handleSaveLlmParams(e: React.FormEvent) {
+    e.preventDefault();
+    await storage.saveLLMParamsConfig(TENANT_ID, llmParams);
+    alert("大模型调度参数保存成功！");
+  }
+
+  async function handleSaveSystemPrompts(e: React.FormEvent) {
+    e.preventDefault();
+    await storage.saveSystemPromptsConfig(TENANT_ID, systemPrompts);
+    alert("系统工作流提示词保存成功！");
+  }
+
+  async function handleSaveBusinessDefaults(e: React.FormEvent) {
+    e.preventDefault();
+    await storage.saveBusinessDefaultsConfig(TENANT_ID, businessDefaults);
+    alert("业务全局默认值保存成功！");
   }
 
   // --- 大模型管理 ---
@@ -228,7 +278,7 @@ export default function AdminPage() {
   const allVisibleExperts = [...visibleSystemExperts, ...customExperts];
 
   return (
-    <main className="app-shell" style={{ overflow: "auto" }}>
+    <main className="app-shell" style={{ display: "block", height: "100vh", overflowY: "auto" }}>
       <header className="app-header">
         <div className="header-inner">
           <div className="brand-lockup">
@@ -248,10 +298,9 @@ export default function AdminPage() {
         </div>
       </header>
 
-      <div className="workspace" style={{ display: "block", maxWidth: "860px", margin: "40px auto", paddingBottom: "100px", background: "transparent", border: "none", height: "auto", overflow: "visible" }}>
-        
-        {/* 用户档案管理 */}
-        <section className="panel" style={{ marginBottom: "32px", padding: "24px" }}>
+      <div className="workspace" style={{ display: "flex", gap: "32px", maxWidth: "1600px", margin: "40px auto", paddingBottom: "100px", alignItems: "flex-start", overflow: "visible" }}>
+  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "32px", minWidth: 0 }}>
+<section className="panel" style={{ padding: "24px", overflow: "visible" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
             <div>
               <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>当前用户档案</h2>
@@ -270,17 +319,15 @@ export default function AdminPage() {
             <button type="submit" className="primary-button">保存配置</button>
           </form>
         </section>
-
-        {/* 大模型管理 */}
-        <section className="panel" style={{ marginBottom: "32px", padding: "24px" }}>
+<section className="panel" style={{ padding: "24px", overflow: "visible" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
             <div>
               <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>组织大模型配置</h2>
               <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>配置和管理可供全组织调用的底层推理大模型 API。</p>
             </div>
-            <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-              <button className="ghost-button" onClick={() => { setImportDraft(""); setIsImportModalOpen(true); }}>导入单模型</button>
-              <button className="primary-button" type="button" onClick={() => {
+            <div style={{ display: "flex", gap: "12px", alignItems: "center", flexShrink: 0 }}>
+              <button className="ghost-button" style={{ padding: "8px 16px", fontSize: "13px", whiteSpace: "nowrap" }} onClick={() => { setImportDraft(""); setIsImportModalOpen(true); }}>导入单模型</button>
+              <button className="primary-button" style={{ padding: "8px 16px", fontSize: "13px", whiteSpace: "nowrap" }} type="button" onClick={() => {
                 setEngineDraft({ id: "", name: "", provider: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o", isActive: false });
                 setIsEngineModalOpen(true);
               }}>
@@ -297,7 +344,7 @@ export default function AdminPage() {
                     <p className="role-name" style={{ fontSize: "16px" }}>{config.name}</p>
                     <p className="role-title" style={{ marginTop: "6px" }}>{config.model} · {config.baseUrl}</p>
                   </div>
-                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: "6px", alignItems: "center", flexShrink: 0, flexWrap: "nowrap" }}>
                     <button className="ghost-button" style={{ padding: "4px 8px" }} onClick={() => handleExportEngineConfig(config)}>导出</button>
                     <button className="ghost-button" style={{ padding: "4px 8px" }} onClick={() => { setEngineDraft(config); setIsEngineModalOpen(true); }}>编辑</button>
                     <button className="btn-delete" type="button" onClick={() => handleDeleteEngine(config.id)} title="删除模型配置">
@@ -314,9 +361,7 @@ export default function AdminPage() {
             )}
           </div>
         </section>
-
-        {/* 组织专家库管理 */}
-        <section className="panel" style={{ padding: "24px" }}>
+<section className="panel" style={{ padding: "24px", overflow: "visible" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
             <div>
               <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>组织级专家库</h2>
@@ -324,8 +369,8 @@ export default function AdminPage() {
                 统一管理全组织的智能体阵容。您可以对内置专家进行深度重塑与隐藏，或创建全新的专属业务专家。
               </p>
             </div>
-            <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-              <button className="primary-button" type="button" onClick={openCreateExpert}>
+            <div style={{ display: "flex", gap: "12px", alignItems: "center", flexShrink: 0 }}>
+              <button className="primary-button" style={{ padding: "8px 16px", fontSize: "13px", whiteSpace: "nowrap" }} type="button" onClick={openCreateExpert}>
                 + 新建智能体
               </button>
             </div>
@@ -350,7 +395,7 @@ export default function AdminPage() {
                         <p className="role-title" style={{ marginTop: "6px" }}>{expert.title}</p>
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    <div style={{ display: "flex", gap: "6px", alignItems: "center", flexShrink: 0, flexWrap: "nowrap" }}>
                       {isOverridden && (
                         <button className="text-button" style={{ color: "var(--amber)" }} onClick={() => handleRestoreSystemExpert(expert.id)}>恢复默认</button>
                       )}
@@ -366,8 +411,131 @@ export default function AdminPage() {
             })}
           </div>
         </section>
+  </div>
+  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "32px", minWidth: 0 }}>
+<section className="panel" style={{ padding: "24px", overflow: "visible" }}>
+          <div style={{ marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
+            <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>业务全局默认值</h2>
+            <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>配置新建会议时的初始状态。</p>
+          </div>
+          <form onSubmit={handleSaveBusinessDefaults} style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px" }}>
+            <label className="compact-field">
+              <span>默认会议名称<InfoTooltip text="新建会议时的初始名称，可随时修改" /></span>
+              <input required value={businessDefaults.defaultMeetingName} onChange={e => setBusinessDefaults({ ...businessDefaults, defaultMeetingName: e.target.value })} />
+            </label>
+            <label className="compact-field">
+              <span>默认会议描述<InfoTooltip text="会议的初始背景说明，将作为大模型的初始上下文注入" /></span>
+              <input required value={businessDefaults.defaultMeetingDesc} onChange={e => setBusinessDefaults({ ...businessDefaults, defaultMeetingDesc: e.target.value })} />
+            </label>
+            <label className="compact-field">
+              <span>默认全局辩论强度 (1-5)<InfoTooltip text="新建会议的初始火力值。1为极度顺从，5为毫不留情的抨击。注意：每个专家也有自己的基础强度，最终表现为两者求平均值" /></span>
+              <input type="number" min="1" max="5" required value={businessDefaults.defaultDebateIntensity} onChange={e => setBusinessDefaults({ ...businessDefaults, defaultDebateIntensity: parseInt(e.target.value) })} />
+            </label>
+            <label className="compact-field">
+              <span>默认流转模式<InfoTooltip text="【顺序发言】：轮流排队发言\n【智能派单】：大模型根据上下文自动挑选下一个最适合反驳/补充的专家\n【手动点名】：用户自己选择谁来回答" /></span>
+              <select required value={businessDefaults.defaultTurnOrderMode} onChange={e => setBusinessDefaults({ ...businessDefaults, defaultTurnOrderMode: e.target.value as any })}>
+                <option value="sequential">顺序发言</option>
+                <option value="relevance">智能相关度派单</option>
+                <option value="manual">手动点名</option>
+              </select>
+            </label>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>
+              <button type="submit" className="primary-button">保存默认值</button>
+            </div>
+          </form>
+        </section>
+<section className="panel" style={{ padding: "24px", overflow: "visible" }}>
+          <div style={{ marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
+            <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>大模型调度参数管理</h2>
+            <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>配置生成 token 限制及各个环节的 Temperature 参数。</p>
+          </div>
+          <form onSubmit={handleSaveLlmParams} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+            <label className="compact-field">
+              <span>Max Tokens (最大生成长度)<InfoTooltip text="单次大模型调用最多允许生成的字数（Token数）。值越大，专家能长篇大论，但响应更慢、成本更高" /></span>
+              <input type="number" required value={llmParams.maxTokens} onChange={e => setLlmParams({ ...llmParams, maxTokens: parseInt(e.target.value) })} />
+            </label>
+            <label className="compact-field">
+              <span>专家发言 Temperature (0-2)<InfoTooltip text="控制专家观点发散程度。较高值(如0.7-0.9)可带来更具创意的观点，但过高可能胡言乱语；较低值(如0.3)则更严谨保守" /></span>
+              <input type="number" step="0.1" required value={llmParams.expertTemperature} onChange={e => setLlmParams({ ...llmParams, expertTemperature: parseFloat(e.target.value) })} />
+            </label>
+            <label className="compact-field">
+              <span>主持人总结 Temperature (0-2)<InfoTooltip text="控制纪要提炼的严谨度。建议保持较低(0.3)，确保总结准确无误，不随意捏造共识" /></span>
+              <input type="number" step="0.1" required value={llmParams.synthesisTemperature} onChange={e => setLlmParams({ ...llmParams, synthesisTemperature: parseFloat(e.target.value) })} />
+            </label>
+            <label className="compact-field">
+              <span>最终结论 Temperature (0-2)<InfoTooltip text="控制最终结案陈词的发挥空间。建议较低以保证高度结构化" /></span>
+              <input type="number" step="0.1" required value={llmParams.conclusionTemperature} onChange={e => setLlmParams({ ...llmParams, conclusionTemperature: parseFloat(e.target.value) })} />
+            </label>
+            <label className="compact-field">
+              <span>智能派单 Temperature (0-2)<InfoTooltip text="大模型决定下一个发言人时的参数。建议极低(0.1)，保证其选人的逻辑稳定性" /></span>
+              <input type="number" step="0.1" required value={llmParams.nextSpeakerTemperature} onChange={e => setLlmParams({ ...llmParams, nextSpeakerTemperature: parseFloat(e.target.value) })} />
+            </label>
+            <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>
+              <button type="submit" className="primary-button">保存调度参数</button>
+            </div>
+          </form>
+        </section>
+<section className="panel" style={{ padding: "24px", overflow: "visible" }}>
+          <div style={{ marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
+            <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>系统工作流提示词管理 (System Prompts)</h2>
+            <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>配置各个节点的系统级指令。按照会议流转的生命周期排序。注意不要删改花括号 `{"{ }"}` 内部的变量名。</p>
+          </div>
+          <form onSubmit={handleSaveSystemPrompts} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+            <div style={{ background: "var(--surface-subtle)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>
+              <h3 style={{ fontSize: "14px", margin: 0, color: "var(--ink)" }}>阶段一：专家发言设定</h3>
+              <label className="compact-field">
+                <span>对抗强度 1 (完全顺从与赞同) (包含 `{"{intensity}"}`)</span>
+                <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.intensityLevel1} onChange={e => setSystemPrompts({ ...systemPrompts, intensityLevel1: e.target.value })} />
+              </label>
+              <label className="compact-field">
+                <span>对抗强度 2 (温和协作) (包含 `{"{intensity}"}`)</span>
+                <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.intensityLevel2} onChange={e => setSystemPrompts({ ...systemPrompts, intensityLevel2: e.target.value })} />
+              </label>
+              <label className="compact-field">
+                <span>对抗强度 3 (中立理性) (包含 `{"{intensity}"}`)</span>
+                <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.intensityLevel3} onChange={e => setSystemPrompts({ ...systemPrompts, intensityLevel3: e.target.value })} />
+              </label>
+              <label className="compact-field">
+                <span>对抗强度 4 (激烈批判) (包含 `{"{intensity}"}`)</span>
+                <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.intensityLevel4} onChange={e => setSystemPrompts({ ...systemPrompts, intensityLevel4: e.target.value })} />
+              </label>
+              <label className="compact-field">
+                <span>对抗强度 5 (毫不留情的开火) (包含 `{"{intensity}"}`)</span>
+                <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.intensityLevel5} onChange={e => setSystemPrompts({ ...systemPrompts, intensityLevel5: e.target.value })} />
+              </label>
+              <label className="compact-field">
+                <span>专家发言框架格式要求 (包含 `{"{expertName}"}`)</span>
+                <textarea style={{ minHeight: "120px", fontFamily: "monospace" }} required value={systemPrompts.expertTurnFormat} onChange={e => setSystemPrompts({ ...systemPrompts, expertTurnFormat: e.target.value })} />
+              </label>
+            </div>
 
-      </div>
+            <div style={{ background: "var(--surface-subtle)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>
+              <h3 style={{ fontSize: "14px", margin: 0, color: "var(--ink)" }}>阶段二：智能流转与总结</h3>
+              <label className="compact-field">
+                <span>智能调度官选人指令 (包含 `{"{candidateList}"}`)</span>
+                <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.nextSpeakerPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, nextSpeakerPrompt: e.target.value })} />
+              </label>
+              <label className="compact-field">
+                <span>主持人提炼纪要指令 (包含 `{"{moderatorName}"}`, `{"{moderatorDesc}"}`)</span>
+                <textarea style={{ minHeight: "150px", fontFamily: "monospace" }} required value={systemPrompts.synthesisPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, synthesisPrompt: e.target.value })} />
+              </label>
+            </div>
+
+            <div style={{ background: "var(--surface-subtle)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>
+              <h3 style={{ fontSize: "14px", margin: 0, color: "var(--ink)" }}>阶段三：会议结束</h3>
+              <label className="compact-field">
+                <span>最终结论生成指令</span>
+                <textarea style={{ minHeight: "100px", fontFamily: "monospace" }} required value={systemPrompts.finalConclusionPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, finalConclusionPrompt: e.target.value })} />
+              </label>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>
+              <button type="submit" className="primary-button">保存提示词模板</button>
+            </div>
+          </form>
+        </section>
+  </div>
+</div>
 
       {/* 大模型编辑 Modal */}
       {isEngineModalOpen && (

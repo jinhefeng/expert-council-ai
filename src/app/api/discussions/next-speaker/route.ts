@@ -9,6 +9,8 @@ export async function POST(request: Request) {
       candidateExperts,
       engineConfig,
       conversationHistory,
+      llmParams,
+      systemPrompts,
     } = body;
 
     if (!question || !candidateExperts) {
@@ -20,7 +22,9 @@ export async function POST(request: Request) {
       previousTurns,
       candidateExperts,
       engineConfig,
-      conversationHistory, // 传入对话历史
+      conversationHistory,
+      llmParams,
+      systemPrompts,
     });
 
     return Response.json({ nextSpeakerId });

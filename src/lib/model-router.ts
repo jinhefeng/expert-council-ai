@@ -1,4 +1,4 @@
-import { Expert, LLMEngineConfig, ChatMessage } from "./types";
+import { Expert, LLMEngineConfig, ChatMessage, LLMParamsConfig, SystemPromptsConfig } from "./types";
 import { moderatorModes } from "./experts";
 
 // 从本地环境变量自动生成系统默认引擎
@@ -37,10 +37,12 @@ export async function callLLM({
   config,
   messages,
   temperature = 0.5,
+  maxTokens = 4000,
 }: {
   config: LLMEngineConfig;
   messages: { role: "system" | "user" | "assistant"; content: string }[];
   temperature?: number;
+  maxTokens?: number;
 }): Promise<string> {
   const baseUrl = config.baseUrl || "https://api.openai.com/v1";
   const apiKey = config.apiKey;
@@ -60,7 +62,7 @@ export async function callLLM({
       model,
       messages,
       temperature,
-      max_tokens: 4000,
+      max_tokens: maxTokens,
     }),
   });
 
@@ -103,15 +105,15 @@ export function formatConversationHistoryForLLM(
 }
 
 // 拼接对抗强度相关的系统指示
-function getIntensityPrompt(personal: number, global: number): string {
+function getIntensityPrompt(personal: number, global: number, prompts: SystemPromptsConfig): string {
   const intensity = Math.min(5, Math.max(1, Math.round((personal + global) / 2)));
-
-  if (intensity <= 2) {
-    return "【辩论对抗强度：温和协作 (Level " + intensity + ")】\n在圆桌会议中，你应当温和、包容，倾向于寻找共识。请重点指出你同意之前发言专家的哪些意见，并在此基础上做建设性的微调与补充。避免激烈的观点对抗，语气要柔和友好。";
-  } else if (intensity === 3) {
-    return "// 【辩论对抗强度：中立理性 (Level " + intensity + ")】\n在圆桌会议中，你应当客观、理性地表达专业判断。不用刻意迎合，也无需刻意抬杠。如实指出你的视角关注的核心问题，并提出独立的专业建议。";
-  } else {
-    return "【辩论对抗强度：激烈批判 (Level " + intensity + ")】\n在圆桌会议中，你代表此视角的极致挑剔立场。态度必须极其强硬、敏锐，充满批判性。请主动挑战并质问前几位发言专家的漏洞，无情揭示其方案逻辑或盲区（如：开发成本激增、系统风险、商业转化低效等）。请用犀利、直接的语气表态，并给出强烈的反制或替代建议。";
+  switch (intensity) {
+    case 1: return prompts.intensityLevel1.replace("{intensity}", "1");
+    case 2: return prompts.intensityLevel2.replace("{intensity}", "2");
+    case 3: return prompts.intensityLevel3.replace("{intensity}", "3");
+    case 4: return prompts.intensityLevel4.replace("{intensity}", "4");
+    case 5: return prompts.intensityLevel5.replace("{intensity}", "5");
+    default: return prompts.intensityLevel3.replace("{intensity}", "3");
   }
 }
 
@@ -124,6 +126,8 @@ export async function getExpertTurn({
   globalDebateIntensity = 3,
   engineConfig,
   conversationHistory = [],
+  llmParams,
+  systemPrompts,
 }: {
   question: string;
   projectContext?: string;
@@ -132,6 +136,8 @@ export async function getExpertTurn({
   globalDebateIntensity?: number;
   engineConfig?: LLMEngineConfig;
   conversationHistory?: ChatMessage[];
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
 }): Promise<{
   content: string;
   expertStance: {
@@ -151,26 +157,17 @@ export async function getExpertTurn({
   }
 
   // 拼接大模型 System Prompt
-  const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity);
-
+  const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity, systemPrompts);
+  const expertTurnPrompt = systemPrompts.expertTurnFormat.replace("{expertName}", expert.name);
   const systemPrompt = [
     expert.systemPrompt,
     `你的性格与气质：${expert.temperament}`,
     `你关注的焦点：${expert.focus.join("、")}`,
     intensityPrompt,
-    `请以第一人称（我是${expert.name}）的口吻直接输出你的发言。
-IMPORTANT: 必须全程使用中文（简体中文）进行回答！
-输出要求：
-1. 包含一段直观生动的会议发言内容（content）。
-2. 在发言的最后，必须提供一个纯 JSON 格式的结构化摘要（便于前端拆分展示），JSON 的 key 如下：
-{
-  "stance": "清晰简短的立场总结",
-  "concern": "最担心的核心风险",
-  "recommendation": "可执行的具体修改建议",
-  "tradeoff": "为了这个决策我们必须做出的取舍/牺牲"
-}
-请注意：JSON 字段必须放在发言的最后，并使用 \`\`\`json ... \`\`\` 标记包裹起来。`
+    expertTurnPrompt
   ].join("\n\n");
+
+
 
   // 格式化以往所有轮次的会议聊天记录作为对话历史上下文
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
@@ -198,6 +195,8 @@ IMPORTANT: 必须全程使用中文（简体中文）进行回答！
   const responseText = await callLLM({
     config: activeEngine,
     messages: promptMessages,
+    temperature: llmParams.expertTemperature,
+    maxTokens: llmParams.maxTokens,
   });
 
   // 解析大模型返回的 JSON 块
@@ -250,6 +249,8 @@ export async function getSynthesis({
   moderatorId = "balanced",
   engineConfig,
   conversationHistory = [],
+  llmParams,
+  systemPrompts,
 }: {
   question: string;
   projectContext?: string;
@@ -257,6 +258,8 @@ export async function getSynthesis({
   moderatorId?: string;
   engineConfig?: LLMEngineConfig;
   conversationHistory?: ChatMessage[];
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
 }): Promise<{
   summary: string;
   consensus: string[];
@@ -273,19 +276,9 @@ export async function getSynthesis({
     );
   }
 
-  const systemPrompt = `你是一名专业的圆桌评审主持人。你的主持风格是：${moderator.name}（${moderator.description}）。
-IMPORTANT: 必须全程使用中文（简体中文）进行回答！
-请综合本轮所有专家的讨论发言，为用户生成一份极具专业度、可执行的会议纪要。
-输出格式要求：
-你必须输出一个纯 JSON 块。不得含有任何 markdown 格式的说明文字，仅返回 JSON：
-{
-  "summary": "本次会议综合性的总结词，交代主持结论",
-  "consensus": ["共识点一", "共识点二"],
-  "disagreements": ["主要的分歧点一", "主要的分歧点二"],
-  "decisions": ["最终的主持决策决定一", "最终的主持决策决定二"],
-  "nextActions": ["下一步行动一", "下一步行动二"]
-}
-注意：直接输出 JSON 格式即可。`;
+  const systemPrompt = systemPrompts.synthesisPrompt
+    .replace("{moderatorName}", moderator.name)
+    .replace("{moderatorDesc}", moderator.description);
 
   // 格式化历史消息
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
@@ -308,7 +301,8 @@ IMPORTANT: 必须全程使用中文（简体中文）进行回答！
   const responseText = await callLLM({
     config: activeEngine,
     messages: promptMessages,
-    temperature: 0.3,
+    temperature: llmParams.synthesisTemperature,
+    maxTokens: llmParams.maxTokens,
   });
 
   try {
@@ -336,12 +330,16 @@ export async function getNextSpeaker({
   candidateExperts,
   engineConfig,
   conversationHistory = [],
+  llmParams,
+  systemPrompts,
 }: {
   question: string;
   previousTurns: { expertName: string; content: string }[];
   candidateExperts: Expert[];
   engineConfig?: LLMEngineConfig;
   conversationHistory?: ChatMessage[];
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
 }): Promise<string> {
   if (candidateExperts.length === 0) {
     return "";
@@ -361,11 +359,9 @@ export async function getNextSpeaker({
     return candidateExperts[0].id;
   }
 
-  const systemPrompt = `你名是会议发言调度官。根据当前的讨论问题和历史发言内容，从剩余的候选发言专家中，挑选一个“与当前话题最契合、最应该进行回应或发言”的专家。
-候选专家列表：
-${candidateExperts.map((exp) => `- ID: ${exp.id}, 专家名称: ${exp.name}, 判断视角: ${exp.lens}`).join("\n")}
+  const candidateList = candidateExperts.map((exp) => `- ID: ${exp.id}, 专家名称: ${exp.name}, 判断视角: ${exp.lens}`).join("\n");
 
-请从列表中选择其一，仅返回选中的专家 ID，不要输出任何其他解释文字。`;
+  const systemPrompt = systemPrompts.nextSpeakerPrompt.replace("{candidateList}", candidateList);
 
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
 
@@ -386,7 +382,8 @@ ${candidateExperts.map((exp) => `- ID: ${exp.id}, 专家名称: ${exp.name}, 判
   const chosenId = await callLLM({
     config: activeEngine,
     messages: promptMessages,
-    temperature: 0.1,
+    temperature: llmParams.nextSpeakerTemperature,
+    maxTokens: llmParams.maxTokens,
   });
 
   const cleanedId = chosenId.trim();
@@ -396,11 +393,17 @@ ${candidateExperts.map((exp) => `- ID: ${exp.id}, 专家名称: ${exp.name}, 判
 
 // 4. 提炼全场最终结论
 export async function getFinalConclusion({
+  projectContext,
   conversationHistory = [],
   engineConfig,
+  llmParams,
+  systemPrompts,
 }: {
+  projectContext?: string;
   conversationHistory: ChatMessage[];
   engineConfig?: LLMEngineConfig;
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
 }): Promise<string> {
   const activeEngine = engineConfig || getSystemEngine();
   
@@ -410,26 +413,21 @@ export async function getFinalConclusion({
     );
   }
 
-  const systemPrompt = `你是一名高阶会议纪要与战略复盘专家。
-IMPORTANT: 必须全程使用中文（简体中文）进行回答！
-请根据以下所有的会议历史记录，全面客观地提取出本场会议的“最终结论”。
-输出要求：
-1. 结论必须是对整场会议核心共识、遗留分歧、后续行动的精炼总结。
-2. 必须直接输出纯文本的 Markdown 格式（建议使用二级/三级标题、加粗、列表），不需要包裹 JSON，也不要包含多余的客套话。
-3. 语言必须高度专业、客观、不偏不倚，具有“一锤定音”的总裁办汇报风格。`;
+  const systemPrompt = systemPrompts.finalConclusionPrompt;
 
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
 
   const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
     { role: "system", content: systemPrompt },
     ...historyMessages,
-    { role: "user", content: "请根据上述会议全程记录，提炼一份极具执行指导意义的最终结论（仅输出 Markdown）。" }
+    { role: "user", content: projectContext ? `会议背景信息：\n${projectContext}\n\n请根据上述会议全程记录，提炼一份极具执行指导意义的最终结论（仅输出 Markdown）。` : "请根据上述会议全程记录，提炼一份极具执行指导意义的最终结论（仅输出 Markdown）。" }
   ];
 
   const responseText = await callLLM({
     config: activeEngine,
     messages: promptMessages,
-    temperature: 0.3, // 降低温度以保证结论的确定性与客观性
+    temperature: llmParams.conclusionTemperature,
+    maxTokens: llmParams.maxTokens,
   });
 
   return responseText.trim();

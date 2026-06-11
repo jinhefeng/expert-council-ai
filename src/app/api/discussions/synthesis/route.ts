@@ -10,6 +10,8 @@ export async function POST(request: Request) {
       moderatorId,
       engineConfig,
       conversationHistory,
+      llmParams,
+      systemPrompts,
     } = body;
 
     if (!question || !expertRounds) {
@@ -22,7 +24,9 @@ export async function POST(request: Request) {
       expertRounds,
       moderatorId,
       engineConfig,
-      conversationHistory, // 传入对话历史
+      conversationHistory,
+      llmParams,
+      systemPrompts,
     });
 
     return Response.json(synthesis);

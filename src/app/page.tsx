@@ -20,7 +20,10 @@ import {
   Meeting,
   ChatMessage,
   SourceItem,
-  UserProfile
+  UserProfile,
+  LLMParamsConfig,
+  SystemPromptsConfig,
+  BusinessDefaultsConfig
 } from "@/lib/types";
 
 const TENANT_ID = "default-org";
@@ -35,6 +38,10 @@ export default function Home() {
   const [customExperts, setCustomExperts] = useState<Expert[]>([]);
   const [engineConfigs, setEngineConfigs] = useState<LLMEngineConfig[]>([]);
   const [userProfile, setUserProfile] = useState<UserProfile>({ name: "产品经理", title: "需求提出人" });
+  
+  const [llmParams, setLlmParams] = useState<LLMParamsConfig | null>(null);
+  const [systemPrompts, setSystemPrompts] = useState<SystemPromptsConfig | null>(null);
+  const [businessDefaults, setBusinessDefaults] = useState<BusinessDefaultsConfig | null>(null);
   
   // 活动的模型引擎 ID：真刀真枪下默认使用系统环境内置的 system-env
   const [activeEngineId, setActiveEngineId] = useState<string>("system-env");
@@ -69,6 +76,11 @@ export default function Home() {
 
   // 弹窗与表单配置状态
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
+  const [customModalMode, setCustomModalMode] = useState<"create" | "edit">("create");
+  const [customModalDraft, setCustomModalDraft] = useState<Partial<Expert>>({});
+  const [isMeetingModalOpen, setIsMeetingModalOpen] = useState(false);
+  const [meetingModalMode, setMeetingModalMode] = useState<"create" | "edit">("create");
+  const [newMeetingDraft, setNewMeetingDraft] = useState<Partial<Meeting>>({});
   const [isEngineModalOpen, setIsEngineModalOpen] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<Expert | null>(null);
 
@@ -114,11 +126,17 @@ export default function Home() {
       const loadedConfigs = await storage.getEngineConfigs(TENANT_ID);
       const systemOverrides = await storage.getSystemExpertsOverrides(TENANT_ID);
       const profile = await storage.getUserProfile(TENANT_ID);
+      const loadedLlmParams = await storage.getLLMParamsConfig(TENANT_ID);
+      const loadedSystemPrompts = await storage.getSystemPromptsConfig(TENANT_ID);
+      const loadedBusinessDefaults = await storage.getBusinessDefaultsConfig(TENANT_ID);
 
       setSystemExperts(mergeSystemExperts(defaultExperts, systemOverrides));
       setCustomExperts(loadedExperts);
       setEngineConfigs(loadedConfigs);
       setUserProfile(profile);
+      setLlmParams(loadedLlmParams);
+      setSystemPrompts(loadedSystemPrompts);
+      setBusinessDefaults(loadedBusinessDefaults);
 
       // 决定默认的模型引擎选择
       const activeConfig = loadedConfigs.find(c => c.isActive);
@@ -155,12 +173,12 @@ export default function Home() {
         const defaultMeeting: Meeting = {
           id: `meeting-${Date.now()}`,
           tenantId: TENANT_ID,
-          name: "核心业务方案跨职能评审会",
-          description: "评估核心业务逻辑、架构设计与用户价值的专家圆桌会",
-          expertIds: ["ux-researcher", "brand-strategist", "growth-designer"],
-          moderatorId: "balanced",
-          globalDebateIntensity: 3,
-          turnOrderMode: "sequential",
+          name: loadedBusinessDefaults?.defaultMeetingName || "核心业务方案跨职能评审会",
+          description: loadedBusinessDefaults?.defaultMeetingDesc || "评估核心业务逻辑、架构设计与用户价值的专家圆桌会",
+          expertIds: loadedBusinessDefaults?.defaultExpertIds || ["ux-researcher", "brand-strategist", "growth-designer"],
+          moderatorId: loadedBusinessDefaults?.defaultModeratorId || "balanced",
+          globalDebateIntensity: loadedBusinessDefaults?.defaultDebateIntensity || 3,
+          turnOrderMode: loadedBusinessDefaults?.defaultTurnOrderMode || "sequential",
           createdAt: Date.now(),
           updatedAt: Date.now(),
           messages: [],
@@ -216,8 +234,14 @@ export default function Home() {
             const { scrollTop, scrollHeight, clientHeight } = thread;
             isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 50;
           } else {
-            chatEndRef.current?.scrollIntoView({ behavior: "auto" });
-            isAutoScrollEnabled.current = true;
+            const conclusionEl = document.getElementById("conclusion-panel");
+            if (activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && conclusionEl) {
+              conclusionEl.scrollIntoView({ behavior: "auto" });
+              isAutoScrollEnabled.current = false;
+            } else {
+              chatEndRef.current?.scrollIntoView({ behavior: "auto" });
+              isAutoScrollEnabled.current = true;
+            }
           }
         }, 0);
       }
@@ -301,27 +325,63 @@ export default function Home() {
   }
 
   // 会议管理
-  async function handleCreateMeeting() {
-    const name = window.prompt("请输入新会议的名称：");
-    if (!name?.trim()) return;
+  function openNewMeetingModal() {
+    setMeetingModalMode("create");
+    setNewMeetingDraft({
+      name: businessDefaults?.defaultMeetingName || "新业务评审会议",
+      description: businessDefaults?.defaultMeetingDesc || "关于复杂议题论证的圆桌会议",
+      globalDebateIntensity: businessDefaults?.defaultDebateIntensity || 3,
+      turnOrderMode: businessDefaults?.defaultTurnOrderMode || "sequential",
+    });
+    setIsMeetingModalOpen(true);
+  }
 
-    const newMeeting: Meeting = {
-      id: `meeting-${Date.now()}`,
-      tenantId: TENANT_ID,
-      name: name.trim(),
-      description: "关于复杂议题论证的圆桌会议",
-      expertIds: ["ux-researcher", "brand-strategist"],
-      moderatorId: "balanced",
-      globalDebateIntensity: 3,
-      turnOrderMode: "sequential",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      messages: [],
-    };
+  function openEditMeetingModal() {
+    if (!activeMeeting) return;
+    setMeetingModalMode("edit");
+    setNewMeetingDraft({
+      name: activeMeeting.name,
+      description: activeMeeting.description,
+      globalDebateIntensity: activeMeeting.globalDebateIntensity,
+      turnOrderMode: activeMeeting.turnOrderMode,
+    });
+    setIsMeetingModalOpen(true);
+  }
 
-    await storage.saveMeeting(TENANT_ID, newMeeting);
-    setMeetings(prev => [...prev, newMeeting]);
-    handleSwitchMeeting(newMeeting.id);
+  async function handleConfirmCreateMeeting(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newMeetingDraft.name?.trim()) return;
+
+    if (meetingModalMode === "create") {
+      const newMeeting: Meeting = {
+        id: `meeting-${Date.now()}`,
+        tenantId: TENANT_ID,
+        name: newMeetingDraft.name.trim(),
+        description: newMeetingDraft.description || "",
+        expertIds: businessDefaults?.defaultExpertIds || ["ux-researcher", "brand-strategist", "growth-designer"],
+        moderatorId: businessDefaults?.defaultModeratorId || "balanced",
+        globalDebateIntensity: newMeetingDraft.globalDebateIntensity || 3,
+        turnOrderMode: newMeetingDraft.turnOrderMode || "sequential",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+      };
+
+      await storage.saveMeeting(TENANT_ID, newMeeting);
+      setMeetings(prev => [...prev, newMeeting]);
+      handleSwitchMeeting(newMeeting.id);
+    } else {
+      if (activeMeeting) {
+        await updateActiveMeeting({
+          name: newMeetingDraft.name.trim(),
+          description: newMeetingDraft.description || "",
+          globalDebateIntensity: newMeetingDraft.globalDebateIntensity || 3,
+          turnOrderMode: newMeetingDraft.turnOrderMode || "sequential",
+        });
+      }
+    }
+    setIsMeetingModalOpen(true); // Wait, this should be false!
+    setIsMeetingModalOpen(false);
   }
 
   async function handleDeleteMeeting(id: string, event: React.MouseEvent) {
@@ -338,6 +398,14 @@ export default function Home() {
 
   // 自定义智能体操作
   function openCustomModal() {
+    setCustomModalMode("create");
+    setCustomModalDraft({ isCustom: true });
+    setIsCustomModalOpen(true);
+  }
+
+  function openEditCustomModal(expert: Expert) {
+    setCustomModalMode("edit");
+    setCustomModalDraft({ ...expert });
     setIsCustomModalOpen(true);
   }
 
@@ -347,13 +415,16 @@ export default function Home() {
     }
     
     await storage.saveCustomExpert(TENANT_ID, newExpert);
-    setCustomExperts(prev => [...prev, newExpert]);
     
-    // 默认加到本场参会人中
-    if (activeMeeting) {
-      await updateActiveMeeting({
-        expertIds: [...activeMeeting.expertIds, newExpert.id]
-      });
+    if (customModalMode === "create") {
+      setCustomExperts(prev => [...prev, newExpert]);
+      if (activeMeeting) {
+        await updateActiveMeeting({
+          expertIds: [...activeMeeting.expertIds, newExpert.id]
+        });
+      }
+    } else {
+      setCustomExperts(prev => prev.map(e => e.id === newExpert.id ? newExpert : e));
     }
 
     setIsCustomModalOpen(false);
@@ -567,7 +638,9 @@ export default function Home() {
         previousTurns,
         globalDebateIntensity: meeting.globalDebateIntensity,
         engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
-        conversationHistory: history, // 传入历史多轮对话上下文
+        conversationHistory: history,
+        llmParams,
+        systemPrompts,
       }),
       signal,
     });
@@ -596,7 +669,9 @@ export default function Home() {
         previousTurns,
         candidateExperts,
         engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
-        conversationHistory: history, // 传入历史对话
+        conversationHistory: history,
+        llmParams,
+        systemPrompts,
       }),
       signal,
     });
@@ -627,7 +702,9 @@ export default function Home() {
         expertRounds,
         moderatorId: meeting.moderatorId,
         engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
-        conversationHistory: history, // 传入历史对话
+        conversationHistory: history,
+        llmParams,
+        systemPrompts,
       }),
       signal,
     });
@@ -701,7 +778,8 @@ export default function Home() {
 
     // 获取参会的专家
     const selectedExperts = allExperts.filter(e => activeMeeting.expertIds.includes(e.id));
-    const contextStr = [projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
+    const meetingContextStr = `会议名称：${activeMeeting.name}\n会议背景与描述：${activeMeeting.description}`;
+    const contextStr = [meetingContextStr, projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
     // 本轮发言缓冲
     const previousTurns: { expertName: string; content: string }[] = [];
@@ -883,7 +961,8 @@ export default function Home() {
     const controller = new AbortController();
     discussAbortControllersRef.current[targetMeetingId] = controller;
     const signal = controller.signal;
-    const contextStr = [projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
+    const meetingContextStr = `会议名称：${activeMeeting.name}\n会议背景与描述：${activeMeeting.description}`;
+    const contextStr = [meetingContextStr, projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
     try {
       const turnResult = await requestExpertTurn(
@@ -951,7 +1030,8 @@ export default function Home() {
     const controller = new AbortController();
     discussAbortControllersRef.current[targetMeetingId] = controller;
     const signal = controller.signal;
-    const contextStr = [projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
+    const meetingContextStr = `会议名称：${activeMeeting.name}\n会议背景与描述：${activeMeeting.description}`;
+    const contextStr = [meetingContextStr, projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
     try {
       const synth = await requestSynthesis(activeMeeting, userQuestion, historyRounds, contextStr, conversationHistory, signal);
@@ -1005,8 +1085,11 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          projectContext: `会议名称：${activeMeeting.name}\n会议背景与描述：${activeMeeting.description}`,
           conversationHistory: activeMeeting.messages,
           engineConfig: activeConfig,
+          llmParams,
+          systemPrompts,
         }),
         signal,
       });
@@ -1092,6 +1175,7 @@ export default function Home() {
     document.querySelectorAll('style').forEach(s => {
       styleContent += s.innerHTML;
     });
+    styleContent += "\n.export-hidden { display: none !important; }\n";
 
     const htmlContent = `
 <!DOCTYPE html>
@@ -1119,6 +1203,7 @@ export default function Home() {
 <div class="export-container">
   <div class="export-header">
     <h1>${activeMeeting.name}</h1>
+    ${activeMeeting.description ? `<p style="margin-bottom: 12px; color: var(--ink, #333); font-size: 15px;">${activeMeeting.description}</p>` : ''}
     <p>导出时间: ${new Date().toLocaleString()}</p>
   </div>
   <div class="chat-thread">
@@ -1183,10 +1268,9 @@ export default function Home() {
           </button>
           
           {isSidebarCollapsed ? (
-            <div className="panel-rail">
+            <div className="panel-rail" onClick={() => setIsSidebarCollapsed(false)} title="展开会议空间">
               <span className="rail-count">{meetings.length}</span>
-              <span>会议</span>
-              <span aria-hidden="true" style={{ transform: "rotate(-90deg)", display: "inline-block" }}>•</span>
+              <span style={{ writingMode: "vertical-rl", letterSpacing: "8px", fontWeight: 600, fontSize: "14px" }}>会议</span>
             </div>
           ) : (
             <div className="meeting-section">
@@ -1196,7 +1280,7 @@ export default function Home() {
                   <button
                     className="btn-create-meeting"
                     type="button"
-                    onClick={handleCreateMeeting}
+                    onClick={openNewMeetingModal}
                     title="新建会议室"
                   >
                     +
@@ -1346,14 +1430,23 @@ export default function Home() {
                       </div>
                       
                       {expert.isCustom && expert.meetingId && (
-                        <button
-                          className="text-button"
-                          type="button"
-                          onClick={() => setDeleteCandidate(expert)}
-                          style={{ position: "absolute", right: "12px", top: "42px" }}
-                        >
-                          删除
-                        </button>
+                        <div style={{ position: "absolute", right: "12px", top: "42px", display: "flex", gap: "8px" }}>
+                          <button
+                            className="text-button"
+                            type="button"
+                            onClick={() => openEditCustomModal(expert)}
+                            style={{ color: "var(--amber)" }}
+                          >
+                            编辑
+                          </button>
+                          <button
+                            className="text-button"
+                            type="button"
+                            onClick={() => setDeleteCandidate(expert)}
+                          >
+                            删除
+                          </button>
+                        </div>
                       )}
                     </div>
                   );
@@ -1366,11 +1459,23 @@ export default function Home() {
         {/* 中间栏：会议室讨论现场 */}
         <section className="panel discussion-panel chat-panel">
           <div className="discussion-heading" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <span className="eyebrow" style={{ display: "block" }}>当前会议室</span>
-              <h2 style={{ fontSize: "20px", fontWeight: "700", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "center", gap: "12px" }}>
+              <h2 style={{ fontSize: "16px", fontWeight: "700", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", margin: 0 }}>
                 {activeMeeting ? activeMeeting.name : "载入中..."}
               </h2>
+              {activeMeeting && (
+                <button className="ghost-button" style={{ width: "24px", height: "24px", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, borderRadius: "6px", color: "var(--muted)", flexShrink: 0, border: "none", background: "transparent", marginLeft: "-4px" }} onClick={openEditMeetingModal} title="编辑会议信息">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                </button>
+              )}
+              {activeMeeting?.description && (
+                <>
+                  <div style={{ width: "1px", height: "14px", background: "var(--line)", flexShrink: 0 }} />
+                  <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }} title={activeMeeting.description}>
+                    {activeMeeting.description}
+                  </p>
+                </>
+              )}
             </div>
             <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
               {/* 点名模式下，如果专家发过言但还未总结，允许手动一键总结 */}
@@ -1544,13 +1649,14 @@ export default function Home() {
 
             {/* 最终结论展示/编辑面板 (讨论解锁时不展示) */}
             {activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && (
-              <div className="conclusion-panel" style={{ 
-                margin: "20px 18px 40px", 
-                padding: "24px", 
+              <div id="conclusion-panel" className="conclusion-panel" style={{ 
+                margin: "32px 18px 0px", 
+                padding: "24px 24px 8px 24px", 
                 border: "2px solid var(--amber)", 
                 borderRadius: "12px", 
                 background: "var(--amber-soft)",
-                position: "relative" 
+                position: "relative",
+                scrollMarginTop: "32px"
               }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", borderBottom: "1px solid rgba(212,175,55,0.3)", paddingBottom: "12px" }}>
                   <h3 style={{ margin: 0, color: "#684c08", display: "flex", alignItems: "center", gap: "8px", fontSize: "16px" }}>
@@ -1558,7 +1664,7 @@ export default function Home() {
                     会议最终结论
                   </h3>
                   <div style={{ display: "flex", gap: "8px" }}>
-                    <button className="ghost-button" onClick={() => { setConclusionDraft(activeMeeting.finalConclusion || ""); setIsEditingConclusion(true); }} style={{ fontSize: "12px", padding: "4px 12px", height: "auto", minHeight: "28px", display: "flex", alignItems: "center", gap: "6px" }}>
+                    <button className="ghost-button export-hidden" onClick={() => { setConclusionDraft(activeMeeting.finalConclusion || ""); setIsEditingConclusion(true); }} style={{ fontSize: "12px", padding: "4px 12px", height: "auto", minHeight: "28px", display: "flex", alignItems: "center", gap: "6px" }}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                       编辑
                     </button>
@@ -1826,11 +1932,57 @@ export default function Home() {
         {/* 弹窗：新建自定义智能体 (已抽取为独立组件) */}
         <ExpertModal 
           isOpen={isCustomModalOpen}
-          mode="create"
+          mode={customModalMode}
           onClose={() => setIsCustomModalOpen(false)}
           onSave={handleSaveCustomExpert}
-          initialData={{ isCustom: true }}
+          initialData={customModalDraft}
         />
+
+        {/* 新建/编辑会议 Modal */}
+        {isMeetingModalOpen && (
+          <div className="modal-backdrop" onClick={() => setIsMeetingModalOpen(false)}>
+            <section className="modal-card" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <div>
+                  <p className="eyebrow">{meetingModalMode === "create" ? "New Meeting" : "Edit Meeting"}</p>
+                  <h2>{meetingModalMode === "create" ? "新建专家评审圆桌" : "编辑会议信息"}</h2>
+                </div>
+                <button className="icon-button" type="button" onClick={() => setIsMeetingModalOpen(false)}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+              </div>
+              <form onSubmit={handleConfirmCreateMeeting} style={{ padding: "0 24px" }}>
+                <label className="compact-field">
+                  <span>会议名称</span>
+                  <input required value={newMeetingDraft.name || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, name: e.target.value})} />
+                </label>
+                <label className="compact-field">
+                  <span>会议描述 (核心议题上下文)</span>
+                  <textarea style={{ minHeight: "80px" }} required value={newMeetingDraft.description || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, description: e.target.value})} />
+                </label>
+                <label className="compact-field">
+                  <span>全局辩论强度 (1-5)</span>
+                  <input type="number" min="1" max="5" required value={newMeetingDraft.globalDebateIntensity || 3} onChange={e => setNewMeetingDraft({...newMeetingDraft, globalDebateIntensity: parseInt(e.target.value)})} />
+                </label>
+                <label className="compact-field">
+                  <span>流转模式</span>
+                  <select required value={newMeetingDraft.turnOrderMode || "sequential"} onChange={e => setNewMeetingDraft({...newMeetingDraft, turnOrderMode: e.target.value as any})}>
+                    <option value="sequential">顺序发言</option>
+                    <option value="relevance">智能相关度派单</option>
+                    <option value="manual">手动点名</option>
+                  </select>
+                </label>
+                <div className="modal-actions" style={{ padding: "24px 0", marginTop: "8px" }}>
+                  <button type="button" className="ghost-button" onClick={() => setIsMeetingModalOpen(false)}>取消</button>
+                  <button type="submit" className="primary-button">{meetingModalMode === "create" ? "创建会议" : "保存修改"}</button>
+                </div>
+              </form>
+            </section>
+          </div>
+        )}
 
         {/* 弹窗：管理新增组织大模型引擎 */}
         {isEngineModalOpen && (

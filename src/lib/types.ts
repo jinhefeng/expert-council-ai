@@ -73,3 +73,32 @@ export type SourceItem = {
   previewUrl?: string;
   textSnippet?: string;
 };
+
+export type LLMParamsConfig = TenantScoped & {
+  maxTokens: number;
+  expertTemperature: number;
+  synthesisTemperature: number;
+  conclusionTemperature: number;
+  nextSpeakerTemperature: number;
+};
+
+export type SystemPromptsConfig = TenantScoped & {
+  intensityLevel1: string;
+  intensityLevel2: string;
+  intensityLevel3: string;
+  intensityLevel4: string;
+  intensityLevel5: string;
+  expertTurnFormat: string;
+  synthesisPrompt: string;
+  nextSpeakerPrompt: string;
+  finalConclusionPrompt: string;
+};
+
+export type BusinessDefaultsConfig = TenantScoped & {
+  defaultMeetingName: string;
+  defaultMeetingDesc: string;
+  defaultExpertIds: string[];
+  defaultModeratorId: string;
+  defaultDebateIntensity: number;
+  defaultTurnOrderMode: "sequential" | "manual" | "relevance";
+};

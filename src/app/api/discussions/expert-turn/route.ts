@@ -11,6 +11,8 @@ export async function POST(request: Request) {
       globalDebateIntensity,
       engineConfig,
       conversationHistory,
+      llmParams,
+      systemPrompts,
     } = body;
 
     if (!question || !expert) {
@@ -24,7 +26,9 @@ export async function POST(request: Request) {
       previousTurns,
       globalDebateIntensity: Number(globalDebateIntensity ?? 3),
       engineConfig,
-      conversationHistory, // 传入对话历史
+      conversationHistory,
+      llmParams,
+      systemPrompts,
     });
 
     return Response.json(result);
