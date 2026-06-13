@@ -571,6 +571,10 @@ export default function AdminPage() {
                 <span>专家发言框架格式要求 (包含 `{"{expertName}"}`)</span>
                 <textarea style={{ minHeight: "120px", fontFamily: "monospace" }} required value={systemPrompts.expertTurnFormat} onChange={e => setSystemPrompts({ ...systemPrompts, expertTurnFormat: e.target.value })} />
               </label>
+              <label className="compact-field">
+                <span>外部智能体发言提示词模板 (包含 `{"{question}"}`, `{"{context}"}`, `{"{previousTurns}"}`, `{"{expertName}"}`)</span>
+                <textarea style={{ minHeight: "150px", fontFamily: "monospace" }} required value={systemPrompts.externalAgentPrompt || ""} onChange={e => setSystemPrompts({ ...systemPrompts, externalAgentPrompt: e.target.value })} />
+              </label>
             </div>
 
             <div style={{ background: "var(--surface-subtle)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>

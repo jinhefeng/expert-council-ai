@@ -10,22 +10,25 @@ interface ExpertModalProps {
   meetingContext?: { name: string; description?: string };
 }
 
-
-
-
 const InfoTooltip = ({ text }: { text: string }) => (
   <div className="info-tooltip-container" style={{ position: "relative", display: "inline-flex", marginLeft: "6px", verticalAlign: "middle", marginBottom: "2px" }}>
-    <div style={{ cursor: "help", display: "flex", alignItems: "center", justifyContent: "center", width: "14px", height: "14px", borderRadius: "50%", border: "1px solid var(--line)", background: "transparent", color: "var(--muted-light)", fontSize: "10px", fontWeight: "bold" }}>?</div>
-    <div className="info-tooltip-text" style={{ 
-      position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%) translateY(-8px)", 
-      background: "var(--ink)", color: "var(--surface)", padding: "6px 12px", 
+    <div style={{ cursor: "help", display: "flex", alignItems: "center", justifyContent: "center", width: "15px", height: "15px", borderRadius: "50%", border: "1px solid var(--line-strong)", background: "var(--surface-strong)", color: "var(--muted)", fontSize: "10px" }}>
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
+        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+      </svg>
+    </div>
+    <div className="info-tooltip-text" style={{
+      position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%) translateY(-8px)",
+      background: "var(--ink)", color: "var(--surface)", padding: "6px 12px",
       borderRadius: "6px", fontSize: "12px", whiteSpace: "nowrap", fontWeight: "normal",
       opacity: 0, visibility: "hidden", transition: "all 0.2s ease", zIndex: 100, pointerEvents: "none", boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
     }}>
       {text}
       <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", border: "5px solid transparent", borderTopColor: "var(--ink)" }} />
     </div>
-    <style dangerouslySetInnerHTML={{__html: `
+    <style dangerouslySetInnerHTML={{
+      __html: `
       .info-tooltip-container:hover .info-tooltip-text { opacity: 1 !important; visibility: visible !important; transform: translateX(-50%) translateY(-4px) !important; }
     `}} />
   </div>
@@ -35,6 +38,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
   const [draft, setDraft] = useState<Partial<Expert>>({});
   const [error, setError] = useState<string | null>(null);
   const [isGeneratingExpert, setIsGeneratingExpert] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   async function handleGenerateExpert() {
     if (!draft.name && !draft.title) return;
@@ -48,7 +52,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
           const allConfigs = JSON.parse(settingsStr);
           const engineConfigs = Array.isArray(allConfigs) ? allConfigs.filter((c: any) => (c.tenantId || "default-org") === "default-org") : [];
           activeEngine = engineConfigs.find((c: any) => c.isActive) || engineConfigs[0];
-        } catch(e) {}
+        } catch (e) { }
       }
 
       let systemPrompts = undefined;
@@ -58,7 +62,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
         try {
           const allPrompts = JSON.parse(promptsStr);
           systemPrompts = allPrompts.find((c: any) => (c.tenantId || "default-org") === "default-org");
-        } catch(e) {}
+        } catch (e) { }
       }
 
       const res = await fetch("/api/discussions/assist", {
@@ -93,7 +97,6 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
     }
   }
 
-
   useEffect(() => {
     if (isOpen) {
       setDraft({
@@ -106,6 +109,11 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
         debateIntensity: initialData?.debateIntensity || 3,
         focus: initialData?.focus || [],
         isCustom: initialData?.isCustom ?? true,
+        isExternalAgent: initialData?.isExternalAgent ?? false,
+        agentType: initialData?.agentType || "openclaw",
+        botToken: initialData?.botToken || "",
+        wsEndpoint: initialData?.wsEndpoint || "",
+        onebotToken: initialData?.onebotToken || "",
       });
       setError(null);
     }
@@ -115,21 +123,40 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!draft.name || !draft.title || !draft.lens || !draft.systemPrompt) {
-      setError("请填写带 * 的必填项");
-      return;
+    if (draft.isExternalAgent) {
+      if (draft.agentType === "onebot") {
+        if (!draft.name || !draft.title || !draft.wsEndpoint) {
+          setError("请填写 OneBot 连接地址等必填项");
+          return;
+        }
+      } else {
+        if (!draft.name || !draft.title || !draft.botToken) {
+          setError("请填写 Token 等必填项");
+          return;
+        }
+      }
+    } else {
+      if (!draft.name || !draft.title || !draft.lens || !draft.systemPrompt) {
+        setError("请填写人设提示词等必填项");
+        return;
+      }
     }
-    
+
     const finalExpert: Expert = {
       id: draft.id || `expert-${Date.now()}`,
-      name: draft.name,
-      title: draft.title,
-      lens: draft.lens,
-      temperament: draft.temperament || "中立客栈",
-      systemPrompt: draft.systemPrompt,
-      debateIntensity: draft.debateIntensity || 3,
-      focus: draft.focus || [],
+      name: draft.name!,
+      title: draft.title!,
+      lens: draft.isExternalAgent ? "外部智能体" : (draft.lens || ""),
+      temperament: draft.isExternalAgent ? "自主思考" : (draft.temperament || "中立冷静"),
+      systemPrompt: draft.isExternalAgent ? "" : (draft.systemPrompt || ""),
+      debateIntensity: draft.isExternalAgent ? 3 : (draft.debateIntensity || 3),
+      focus: draft.isExternalAgent ? [] : (draft.focus || []),
       isCustom: draft.isCustom,
+      isExternalAgent: draft.isExternalAgent,
+      agentType: draft.isExternalAgent ? draft.agentType : undefined,
+      botToken: draft.isExternalAgent && draft.agentType === "openclaw" ? draft.botToken : undefined,
+      wsEndpoint: draft.isExternalAgent && draft.agentType === "onebot" ? draft.wsEndpoint : undefined,
+      onebotToken: draft.isExternalAgent && draft.agentType === "onebot" ? draft.onebotToken : undefined,
     };
 
     onSave(finalExpert);
@@ -150,84 +177,203 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
             </svg>
           </button>
         </div>
-        
+
         {/* 使用 Flex 布局使得按钮栏始终在底部固定，表单内容在中间滚动 */}
-        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 160px)" }}>
-          
-          <div style={{ padding: "0 24px", overflowY: "auto", flex: 1 }}>
-          
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
-            <label className="compact-field">
-              <span>智能体角色名称 *<InfoTooltip text="显示在会议列表中的名字" /></span>
-              <input required placeholder="如：合规风险官" value={draft.name || ""} onChange={e => setDraft({...draft, name: e.target.value})} />
-            </label>
-            <label className="compact-field">
-              <span>核心头衔标签 (Title) *<InfoTooltip text="该智能体代表的具体专业职能" /></span>
-              <input required placeholder="如：首席安全架构师" value={draft.title || ""} onChange={e => setDraft({...draft, title: e.target.value})} />
-            </label>
-          </div>
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 200px)", minHeight: "350px", maxHeight: "680px" }}>
 
-          <div style={{ padding: "12px 24px", background: "rgba(212,175,55,0.05)", borderTop: "1px solid var(--line-light)", borderBottom: "1px solid var(--line-light)", margin: "16px -24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontSize: "13px", color: "var(--muted)" }}>
-              填写完上方基本信息后，可自动生成后续人设配置
+          <div className="modal-form-content">
+
+            {/* 是否作为外部智能体接入 */}
+            <label className={`external-agent-toggle-card ${draft.isExternalAgent ? "is-checked" : ""}`}>
+              <div className="toggle-switch-label-area">
+                <span className="toggle-switch-title" style={{ display: "flex", alignItems: "center", fontWeight: 600 }}>
+                  接入外部智能体 (如 OpenClaw / QwenPaw / nanobot等) 
+                  <InfoTooltip text="开启后，该智能体将由运行在您的独立智能体进程驱动，平台不再调用预置的大模型人设。" />
+                </span>
+              </div>
+              <div style={{ display: "inline-flex", alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  className="switch-control-input"
+                  checked={draft.isExternalAgent || false}
+                  onChange={e => {
+                    const checked = e.target.checked;
+                    setDraft(prev => ({
+                      ...prev,
+                      isExternalAgent: checked,
+                      agentType: prev.agentType || "openclaw",
+                      botToken: checked && !prev.botToken ? `dc_bot_${Math.random().toString(36).substring(2, 10)}_${Date.now().toString(36)}` : prev.botToken
+                    }));
+                  }}
+                />
+                <span className="switch-control-track">
+                  <span className="switch-control-thumb" />
+                </span>
+              </div>
+            </label>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px", marginBottom: "16px" }}>
+              <label className="compact-field">
+                <span>智能体角色名称 *<InfoTooltip text="显示在会议列表中的名字" /></span>
+                <input required placeholder="如：合规风险官" value={draft.name || ""} onChange={e => setDraft({ ...draft, name: e.target.value })} />
+              </label>
+              <label className="compact-field">
+                <span>核心头衔标签 (Title) *<InfoTooltip text="该智能体代表的具体专业职能" /></span>
+                <input required placeholder="如：首席安全架构师" value={draft.title || ""} onChange={e => setDraft({ ...draft, title: e.target.value })} />
+              </label>
             </div>
-            <button
-              type="button"
-              onClick={handleGenerateExpert}
-              disabled={isGeneratingExpert || (!draft.name && !draft.title)}
-              style={{
-                background: "var(--surface)", border: "1px solid var(--amber)", color: "var(--amber)", fontSize: "13px", padding: "6px 12px", borderRadius: "6px",
-                cursor: (isGeneratingExpert || (!draft.name && !draft.title)) ? "not-allowed" : "pointer",
-                opacity: (isGeneratingExpert || (!draft.name && !draft.title)) ? 0.5 : 1,
-                display: "flex", alignItems: "center", gap: "6px", fontWeight: 500
-              }}
-            >
-              ✨ {isGeneratingExpert ? "正在推理人设..." : "根据角色信息 AI 自动补全设定"}
-            </button>
-          </div>
 
-          <label className="compact-field">
-            <span>审视该议题的专业视角 (Lens) *<InfoTooltip text="给大模型的强制要求：该专家必须从哪个专门的角度来评估会议议题？" /></span>
-            <input required placeholder="说明该智能体着重关注哪些点" value={draft.lens || ""} onChange={e => setDraft({...draft, lens: e.target.value})} />
-          </label>
+            {draft.isExternalAgent ? (
+              <div className="external-agent-config-panel">
+                <div className="agent-type-tabs">
+                  <label className={`agent-type-tab ${draft.agentType === "openclaw" ? "is-active" : ""}`}>
+                    <input
+                      type="radio"
+                      name="agentType"
+                      checked={draft.agentType === "openclaw"}
+                      onChange={() => setDraft(prev => ({ ...prev, agentType: "openclaw" }))}
+                    />
+                    🤖 OpenClaw 原生通道
+                  </label>
+                  <label className={`agent-type-tab ${draft.agentType === "onebot" ? "is-active" : ""}`}>
+                    <input
+                      type="radio"
+                      name="agentType"
+                      checked={draft.agentType === "onebot"}
+                      onChange={() => setDraft(prev => ({ ...prev, agentType: "onebot", wsEndpoint: prev.wsEndpoint || "ws://localhost:6199/ws" }))}
+                    />
+                    ⚡ OneBot 协议 (QwenPaw)
+                  </label>
+                </div>
 
-          <label className="compact-field">
-            <span>智能体性格脾气 (Temperament)<InfoTooltip text="控制专家的说话语气，比如严厉、温和、讽刺等" /></span>
-            <input placeholder="如：极其挑剔、强迫症、极其保守" value={draft.temperament || ""} onChange={e => setDraft({...draft, temperament: e.target.value})} />
-          </label>
+                {draft.agentType === "onebot" ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                    <label className="compact-field">
+                      <span>OneBot 反向 WebSocket 地址 *<InfoTooltip text="您本地运行的 QwenPaw/AgentScope OneBot 服务连接端口，通常为 ws://localhost:6199/ws" /></span>
+                      <input
+                        required
+                        placeholder="ws://localhost:6199/ws"
+                        value={draft.wsEndpoint || ""}
+                        onChange={e => setDraft({ ...draft, wsEndpoint: e.target.value })}
+                      />
+                    </label>
+                    <label className="compact-field">
+                      <span>Access Token (选填)<InfoTooltip text="如果在 QwenPaw 的 OneBot 设置中启用了鉴权，请填写对应的 Access Token" /></span>
+                      <input
+                        placeholder="留空或填写 Access Token"
+                        value={draft.onebotToken || ""}
+                        onChange={e => setDraft({ ...draft, onebotToken: e.target.value })}
+                      />
+                    </label>
+                    <p style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5", marginTop: "4px" }}>
+                      💡 <strong>配置方法</strong>：在 QwenPaw Desktop 客户端中打开 <strong>“OneBot 设置”</strong> 并启用它。WebSocket 端口填写为 <code>6199</code>。平台连接成功后，侧边栏状态将同步亮起绿色“在线”圆点。
+                    </p>
+                  </div>
+                ) : (
+                  <label className="compact-field" style={{ marginBottom: 0 }}>
+                    <span style={{ fontWeight: 600, fontSize: "13px" }}>小龙虾机器人 Token (Bot Token) *<InfoTooltip text="外部智能体插件连接 to 本平台时的认证 Token" /></span>
+                    <div className="token-display-wrap" style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
+                      <input
+                        readOnly
+                        required
+                        className="token-input-field"
+                        style={{ flex: 1, fontFamily: "var(--mono)", fontSize: "12.5px" }}
+                        value={draft.botToken || ""}
+                      />
+                      <button
+                        type="button"
+                        className={`tech-button ${copied ? "is-copied" : ""}`}
+                        onClick={() => {
+                          if (draft.botToken) {
+                            navigator.clipboard.writeText(draft.botToken);
+                            setCopied(true);
+                            setTimeout(() => setCopied(false), 2000);
+                          }
+                        }}
+                      >
+                        {copied ? "已复制 ✓" : "复制"}
+                      </button>
+                      <button
+                        type="button"
+                        className="tech-button"
+                        onClick={() => {
+                          setDraft(prev => ({
+                            ...prev,
+                            botToken: `dc_bot_${Math.random().toString(36).substring(2, 10)}_${Date.now().toString(36)}`
+                          }));
+                        }}
+                      >
+                        重置
+                      </button>
+                    </div>
+                    <p style={{ fontSize: "12px", color: "var(--muted)", marginTop: "12px", lineHeight: "1.5" }}>
+                      💡 <strong>配置方法</strong>：在本地运行的小龙虾 (OpenClaw) 插件中，配置 WebSocket 连接地址为：<br />
+                      <code>ws://localhost:18788/bot</code>，并填入此 Token。
+                    </p>
+                  </label>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="ai-assist-complete-card">
+                  <div className="ai-assist-text">
+                    填写完上方基本信息后，可自动生成后续人设配置
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-ai-complete"
+                    onClick={handleGenerateExpert}
+                    disabled={isGeneratingExpert || (!draft.name && !draft.title)}
+                  >
+                    <span>✨</span>
+                    {isGeneratingExpert ? "正在生成..." : "AI 自动补全设定"}
+                  </button>
+                </div>
 
+                <label className="compact-field">
+                  <span>审视该议题的专业视角 (Lens) *<InfoTooltip text="给大模型的强制要求：该专家必须从哪个专门的角度来评估会议议题？" /></span>
+                  <input required placeholder="说明该智能体着重关注哪些点" value={draft.lens || ""} onChange={e => setDraft({ ...draft, lens: e.target.value })} />
+                </label>
 
-          <label className="compact-field">
-            <span>核心关注指标 (Focus)<InfoTooltip text="该智能体最关心的几个业务指标或评估维度，请用英文逗号分隔" /></span>
-            <input 
-              placeholder="如：转化率, 用户留存, 获客成本" 
-              value={draft.focus?.join(", ") || ""} 
-              onChange={e => setDraft({...draft, focus: e.target.value.split(",").map(s => s.trim()).filter(Boolean)})} 
-            />
-          </label>
-          <label className="compact-field">
-            <span>底层人设提示词 (System Prompt) *<InfoTooltip text="这部分将作为 System Role 完整注入大模型" /></span>
-            <textarea 
-              required 
-              placeholder="可以填入该智能体专属的完整 System Setting。"
-              value={draft.systemPrompt || ""} 
-              onChange={e => setDraft({...draft, systemPrompt: e.target.value})} 
-              style={{ width: "100%", height: "120px", fontFamily: "monospace", resize: "vertical", fontSize: "13px", lineHeight: 1.5 }}
-            />
-          </label>
+                <label className="compact-field">
+                  <span>智能体性格脾气 (Temperament)<InfoTooltip text="控制专家的说话语气，比如严厉、温和、讽刺等" /></span>
+                  <input placeholder="如：极其挑剔、强迫症、极其保守" value={draft.temperament || ""} onChange={e => setDraft({ ...draft, temperament: e.target.value })} />
+                </label>
 
-          <label className="compact-field">
-            <span>默认辩论激烈度：{draft.debateIntensity}<InfoTooltip text="1为温和赞同，5为猛烈抨击。此值将与会议全局强度取平均，决定该专家的最终表现" /></span>
-            <input
-              type="range"
-              min="1"
-              max="5"
-              value={draft.debateIntensity || 3}
-              onChange={(e) => setDraft({ ...draft, debateIntensity: Number(e.target.value) })}
-            />
-          </label>
+                <label className="compact-field">
+                  <span>核心关注指标 (Focus)<InfoTooltip text="该智能体最关心的几个业务指标 or 评估维度，请用英文逗号分隔" /></span>
+                  <input
+                    placeholder="如：转化率, 用户留存, 获客成本"
+                    value={draft.focus?.join(", ") || ""}
+                    onChange={e => setDraft({ ...draft, focus: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
+                  />
+                </label>
+                <label className="compact-field">
+                  <span>底层人设提示词 (System Prompt) *<InfoTooltip text="这部分将作为 System Role 完整注入大模型" /></span>
+                  <textarea
+                    required
+                    placeholder="可以填入该智能体专属的完整 System Setting。"
+                    value={draft.systemPrompt || ""}
+                    onChange={e => setDraft({ ...draft, systemPrompt: e.target.value })}
+                    style={{ width: "100%", height: "120px", fontFamily: "monospace", resize: "vertical", fontSize: "13px", lineHeight: 1.5 }}
+                  />
+                </label>
 
-          {error && <p style={{ color: "var(--red)", fontSize: "13px", marginTop: "12px" }}>{error}</p>}
+                <label className="compact-field">
+                  <span>默认辩论激烈度：{draft.debateIntensity}<InfoTooltip text="1为温和赞同，5为猛烈抨击。此值将与会议全局强度取平均，决定该专家的最终表现" /></span>
+                  <input
+                    type="range"
+                    min="1"
+                    max="5"
+                    value={draft.debateIntensity || 3}
+                    onChange={(e) => setDraft({ ...draft, debateIntensity: Number(e.target.value) })}
+                    style={{ width: "100%", marginTop: "8px" }}
+                  />
+                </label>
+              </>
+            )}
+
+            {error && <p style={{ color: "var(--red)", fontSize: "13px", marginTop: "12px" }}>{error}</p>}
 
           </div>
 

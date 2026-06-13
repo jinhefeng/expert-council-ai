@@ -14,6 +14,7 @@ import remarkBreaks from "remark-breaks";
 import { experts as defaultExperts, moderatorModes, mergeSystemExperts } from "@/lib/experts";
 import { ExpertModal } from "@/components/ExpertModal";
 import { LocalStorageService } from "@/lib/storage-service";
+import { extractAndCleanJson } from "@/lib/content-parser";
 import {
   Expert,
   LLMEngineConfig,
@@ -38,6 +39,15 @@ export default function Home() {
   const [customExperts, setCustomExperts] = useState<Expert[]>([]);
   const [engineConfigs, setEngineConfigs] = useState<LLMEngineConfig[]>([]);
   const [userProfile, setUserProfile] = useState<UserProfile>({ name: "产品经理", title: "需求提出人" });
+  
+  const [botStatuses, setBotStatuses] = useState<Record<string, "online" | "offline">>({});
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsResolversRef = useRef<Record<string, {
+    text: string;
+    onChunk?: (text: string) => void;
+    resolve: (res: { content: string; expertStance: any }) => void;
+    reject: (err: Error) => void;
+  }>>({});
   
   const [llmParams, setLlmParams] = useState<LLMParamsConfig | null>(null);
   const [systemPrompts, setSystemPrompts] = useState<SystemPromptsConfig | null>(null);
@@ -253,6 +263,119 @@ export default function Home() {
   const activeEngineConfig = useMemo(() => {
     return engineConfigs.find(c => c.id === activeEngineId);
   }, [engineConfigs, activeEngineId]);
+
+  const allExpertsRef = useRef(allExperts);
+  useEffect(() => {
+    allExpertsRef.current = allExperts;
+  }, [allExperts]);
+
+  // 维护到本地小龙虾转发网关的 WebSocket 客户端长连接
+  useEffect(() => {
+    let socket: WebSocket;
+    let reconnectTimeout: any;
+
+    function connect() {
+      if (typeof window === "undefined") return;
+      console.log("[WS-Frontend] Connecting to relay server at ws://localhost:18788/frontend ...");
+      socket = new WebSocket("ws://localhost:18788/frontend");
+
+      socket.onopen = () => {
+        console.log("[WS-Frontend] Connected to relay server");
+        // 注册当前所有的外部 Bot
+        const bots = allExpertsRef.current
+          .filter(e => e.isExternalAgent)
+          .map(e => ({ 
+            expertId: e.id, 
+            botToken: e.botToken?.trim(),
+            agentType: e.agentType || "openclaw",
+            wsEndpoint: e.wsEndpoint?.trim(),
+            onebotToken: e.onebotToken?.trim()
+          }));
+        socket.send(JSON.stringify({ type: "register_bots", bots }));
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          switch (message.type) {
+            case "bot_status_update":
+              const statuses: Record<string, "online" | "offline"> = {};
+              message.statuses.forEach((s: any) => {
+                statuses[s.expertId] = s.status;
+              });
+              setBotStatuses(statuses);
+              break;
+
+            case "stream_chunk":
+              const resolver = wsResolversRef.current[message.expertId];
+              if (resolver) {
+                resolver.text += message.chunk;
+                if (resolver.onChunk) {
+                  resolver.onChunk(resolver.text);
+                }
+              }
+              break;
+
+            case "stream_done":
+              const doneResolver = wsResolversRef.current[message.expertId];
+              if (doneResolver) {
+                const curExpert = allExpertsRef.current.find(e => e.id === message.expertId);
+                const curExpertName = curExpert ? curExpert.name : "";
+                
+                const cleaned = extractAndCleanJson(doneResolver.text, curExpertName);
+
+                doneResolver.resolve({
+                  content: cleaned.content,
+                  expertStance: cleaned.expertStance
+                });
+                delete wsResolversRef.current[message.expertId];
+              }
+              break;
+
+            case "stream_error":
+              const errResolver = wsResolversRef.current[message.expertId];
+              if (errResolver) {
+                errResolver.reject(new Error(message.error));
+                delete wsResolversRef.current[message.expertId];
+              }
+              break;
+          }
+        } catch (e) {
+          console.error("[WS-Frontend] Error parsing WS message", e);
+        }
+      };
+
+      socket.onclose = () => {
+        console.log("[WS-Frontend] Connection closed, retrying in 3s...");
+        reconnectTimeout = setTimeout(connect, 3000);
+      };
+
+      wsRef.current = socket;
+    }
+
+    connect();
+
+    return () => {
+      if (socket) socket.close();
+      clearTimeout(reconnectTimeout);
+    };
+  }, []);
+
+  // 当专家列表变化时，同步向网关注册新智能体 Token
+  useEffect(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      const bots = allExperts
+        .filter(e => e.isExternalAgent)
+        .map(e => ({ 
+          expertId: e.id, 
+          botToken: e.botToken?.trim(),
+          agentType: e.agentType || "openclaw",
+          wsEndpoint: e.wsEndpoint?.trim(),
+          onebotToken: e.onebotToken?.trim()
+        }));
+      wsRef.current.send(JSON.stringify({ type: "register_bots", bots }));
+    }
+  }, [allExperts]);
 
   // 智能滚动处理：保存/恢复滚动条，并在同一会议有新消息时自动沉底
   useEffect(() => {
@@ -662,6 +785,38 @@ export default function Home() {
     signal: AbortSignal,
     onChunk?: (text: string) => void
   ) {
+    if (expert.isExternalAgent) {
+      if (botStatuses[expert.id] !== "online") {
+        return Promise.reject(new Error(`智能体专家 [${expert.name}] 当前处于离线状态，无法发言。请确保其成功连接中继网关。`));
+      }
+
+      return new Promise((resolve, reject) => {
+        const turnId = `turn-${Date.now()}`;
+        wsResolversRef.current[expert.id] = {
+          text: "",
+          onChunk,
+          resolve,
+          reject
+        };
+
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: "request_turn",
+            expertId: expert.id,
+            expertName: expert.name,
+            question: userQuestion,
+            context: contextStr,
+            previousTurns,
+            externalAgentPrompt: systemPrompts?.externalAgentPrompt || "",
+            turnId
+          }));
+        } else {
+          delete wsResolversRef.current[expert.id];
+          reject(new Error("本地中继网关已断开连接，无法请求外部智能体。"));
+        }
+      });
+    }
+
     const response = await fetch("/api/discussions/expert-turn", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -728,45 +883,7 @@ export default function Home() {
         }
       }
       
-      let stance = "暂无立场摘要";
-      let concern = "暂无风险摘要";
-      let recommendation = "暂无建议摘要";
-      let tradeoff = "暂无取舍摘要";
-      let displayContent = fullContent;
-      
-      const jsonRegex = /```[a-zA-Z]*\s*(\{[\s\S]*?\})\s*```|(\{[\s\S]*?\})/;
-      const jsonMatch = fullContent.match(jsonRegex);
-      
-      if (jsonMatch) {
-        const jsonString = jsonMatch[1] || jsonMatch[2];
-        try {
-          const parsed = JSON.parse(jsonString);
-          stance = parsed.stance || stance;
-          concern = parsed.concern || concern;
-          recommendation = parsed.recommendation || recommendation;
-          tradeoff = parsed.tradeoff || tradeoff;
-        } catch (e) {
-          const matchField = (field: string) => {
-            const regex = new RegExp(`"${field}"\\s*:\\s*"([^"]+)"`);
-            const res = jsonString.match(regex);
-            return res ? res[1] : "";
-          };
-          stance = matchField("stance") || stance;
-          concern = matchField("concern") || concern;
-          recommendation = matchField("recommendation") || recommendation;
-          tradeoff = matchField("tradeoff") || tradeoff;
-        }
-        
-        displayContent = fullContent.replace(jsonMatch[0], "");
-        displayContent = displayContent
-          .replace(/```[a-zA-Z]*\s*$/, "")
-          .replace(/[\s\n\]\[`]+$/, "")
-          .trim();
-      }
-      return {
-        content: displayContent,
-        expertStance: { stance, concern, recommendation, tradeoff }
-      };
+      return extractAndCleanJson(fullContent, expert.name);
     } else {
       return response.json();
     }
@@ -955,7 +1072,13 @@ export default function Home() {
       }
 
       // 自动圆桌发言流 (Sequential 或 Relevance)
-      let remainCandidates = [...selectedExperts];
+      // 自动排除处于离线状态的外部智能体，防止调用链崩溃中断会议
+      let remainCandidates = selectedExperts.filter(e => {
+        if (e.isExternalAgent) {
+          return botStatuses[e.id] === "online";
+        }
+        return true;
+      });
 
       while (remainCandidates.length > 0) {
         if (signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -1544,7 +1667,7 @@ export default function Home() {
                   return (
                     <div
                       key={expert.id}
-                      className={`role-card ${isSelected ? "is-selected" : ""} ${isSpeaking ? "is-speaking" : ""}`}
+                      className={`role-card ${isSelected ? "is-selected" : ""} ${isSpeaking ? "is-speaking" : ""} ${expert.isExternalAgent ? "is-external-agent" : ""}`}
                     >
                       <div className="role-toggle">
                         <div 
@@ -1566,11 +1689,45 @@ export default function Home() {
                           }}
                         >
                           <div style={{ flex: 1 }}>
-                            <p className="role-name" style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            <p className="role-name" style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                               {expert.name}
-                              <span className={`intensity-badge lvl-${expert.debateIntensity}`}>
-                                Lvl {expert.debateIntensity} 对抗
-                              </span>
+                              {expert.isExternalAgent && (
+                                <span style={{ fontSize: "10px", color: "var(--muted)", padding: "1.5px 5px", border: "1px solid var(--line)", borderRadius: "4px", fontWeight: "normal" }}>
+                                  小龙虾
+                                </span>
+                              )}
+                              {!expert.isExternalAgent && (
+                                <span className={`intensity-badge lvl-${expert.debateIntensity}`}>
+                                  Lvl {expert.debateIntensity} 对抗
+                                </span>
+                              )}
+                              {expert.isExternalAgent && (
+                                <span 
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: "4px",
+                                    fontSize: "10px",
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    fontWeight: 600,
+                                    background: botStatuses[expert.id] === "online" ? "rgba(40,167,69,0.12)" : "rgba(220,53,69,0.12)",
+                                    color: botStatuses[expert.id] === "online" ? "#28a745" : "#dc3545",
+                                    border: botStatuses[expert.id] === "online" ? "1px solid rgba(40,167,69,0.25)" : "1px solid rgba(220,53,69,0.25)"
+                                  }}
+                                >
+                                  <span 
+                                    className={botStatuses[expert.id] === "online" ? "online-dot-pulse" : ""}
+                                    style={{
+                                      width: "6px",
+                                      height: "6px",
+                                      borderRadius: "50%",
+                                      background: botStatuses[expert.id] === "online" ? "#28a745" : "#dc3545"
+                                    }} 
+                                  />
+                                  {botStatuses[expert.id] === "online" ? "在线" : "离线"}
+                                </span>
+                              )}
                             </p>
                             <p className="role-title">{expert.title}</p>
                           </div>

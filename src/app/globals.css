@@ -1805,3 +1805,234 @@ h3 {
   padding-left: 12px;
   color: var(--muted);
 }
+
+/* ==========================================================================
+   External Agent Toggle Switch & Card Styling
+   ========================================================================== */
+
+.external-agent-toggle-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(244, 239, 227, 0.3);
+  border: 1px solid rgba(184, 134, 11, 0.12);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  user-select: none;
+  transition: all 200ms ease;
+  margin-bottom: 20px;
+  margin-top: 0;
+}
+
+.external-agent-toggle-card:hover {
+  background: rgba(244, 239, 227, 0.45);
+  border-color: rgba(184, 134, 11, 0.22);
+}
+
+.external-agent-toggle-card.is-checked {
+  background: rgba(244, 239, 227, 0.85);
+  border-color: var(--amber);
+  box-shadow: 0 2px 10px rgba(184, 134, 11, 0.05);
+}
+
+.external-agent-toggle-card input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-control-track {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  background-color: var(--line-strong);
+  border-radius: 999px;
+  transition: background-color 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
+.external-agent-toggle-card.is-checked .switch-control-track {
+  background-color: var(--amber);
+}
+
+.switch-control-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background-color: white;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.external-agent-toggle-card.is-checked .switch-control-thumb {
+  transform: translateX(18px);
+}
+
+.role-card.is-external-agent.is-selected {
+  border-color: var(--amber) !important;
+  background: var(--amber-soft) !important;
+  box-shadow: 0 4px 12px rgba(184, 134, 11, 0.06);
+}
+
+@keyframes online-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(45, 106, 79, 0.5); }
+  70% { box-shadow: 0 0 0 6px rgba(45, 106, 79, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(45, 106, 79, 0); }
+}
+
+.online-dot-pulse {
+  animation: online-pulse 2s infinite;
+}
+
+/* ==========================================================================
+   ExpertModal UX Refined Styles
+   ========================================================================== */
+
+.modal-form-content {
+  padding: 18px 24px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* 协议配置标签页 */
+.agent-type-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 1px;
+  margin-bottom: 18px;
+  margin-top: 4px;
+}
+
+.agent-type-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 180ms ease;
+  user-select: none;
+}
+
+.agent-type-tab:hover {
+  color: var(--ink);
+}
+
+.agent-type-tab.is-active {
+  color: var(--amber);
+  border-bottom-color: var(--amber);
+  background: linear-gradient(180deg, transparent, rgba(184, 134, 11, 0.03));
+}
+
+.agent-type-tab input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+/* 外部配置背景面板 */
+.external-agent-config-panel {
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  padding: 16px;
+  margin-top: 4px;
+  margin-bottom: 20px;
+  backdrop-filter: blur(4px);
+}
+
+/* AI 人设补全条 */
+.ai-assist-complete-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 16px;
+  background: linear-gradient(90deg, rgba(212, 175, 55, 0.04), rgba(212, 175, 55, 0.08));
+  border: 1px solid rgba(184, 134, 11, 0.15);
+  border-radius: 8px;
+  margin: 18px 0;
+  transition: all 200ms ease;
+}
+
+.ai-assist-complete-card:hover {
+  border-color: rgba(184, 134, 11, 0.35);
+  box-shadow: 0 4px 12px rgba(184, 134, 11, 0.04);
+}
+
+.ai-assist-text {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.btn-ai-complete {
+  background: var(--surface-strong);
+  border: 1px solid var(--amber);
+  color: var(--amber);
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 180ms ease;
+  box-shadow: 0 1px 2px rgba(184, 134, 11, 0.03);
+}
+
+.btn-ai-complete:hover:not(:disabled) {
+  background: var(--amber);
+  color: white;
+  box-shadow: 0 4px 12px rgba(184, 134, 11, 0.18);
+  transform: translateY(-1px);
+}
+
+.btn-ai-complete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+/* 复制重置微按钮 */
+.tech-button {
+  font-size: 12px;
+  padding: 5px 11px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
+  color: var(--muted);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.tech-button:hover {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.tech-button.is-copied {
+  border-color: var(--green) !important;
+  background: var(--green-soft) !important;
+  color: var(--green) !important;
+}
+
+/* 默认 range slider 的颜色一致性 */
+.modal-form-content input[type="range"] {
+  accent-color: var(--amber);
+}

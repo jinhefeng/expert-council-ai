@@ -20,6 +20,13 @@ export type Expert = TenantScoped & {
   isCustom?: boolean;      // 是否为自定义智能体
   isHidden?: boolean;      // 是否在列表中被软删除（隐藏）
   meetingId?: string;      // 若为空，则为后台添加的全局自定义智能体；若有值，则为该会议专属
+  
+  // 外部小龙虾智能体(OpenClaw/QwenPaw)专属
+  isExternalAgent?: boolean;
+  agentType?: "openclaw" | "onebot"; // 智能体类型：小龙虾原生通道 或 OneBot协议
+  wsEndpoint?: string;                // OneBot 连接地址，例如 ws://localhost:6199/ws
+  botToken?: string;                  // OpenClaw 连接 Token
+  onebotToken?: string;               // OneBot 鉴权 Token
 };
 
 export type LLMEngineConfig = TenantScoped & {
@@ -96,6 +103,7 @@ export type SystemPromptsConfig = TenantScoped & {
   finalConclusionPrompt: string;
   meetingDescPrompt: string;
   expertDetailsPrompt: string;
+  externalAgentPrompt: string; // 外部智能体全局发言提示词模板
 };
 
 export type BusinessDefaultsConfig = TenantScoped & {

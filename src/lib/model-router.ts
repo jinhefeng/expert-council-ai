@@ -1,5 +1,6 @@
 import { Expert, LLMEngineConfig, ChatMessage, LLMParamsConfig, SystemPromptsConfig } from "./types";
 import { moderatorModes } from "./experts";
+import { extractAndCleanJson } from "./content-parser";
 
 // 从本地环境变量自动生成系统默认引擎
 export function getSystemEngine(): LLMEngineConfig | null {
@@ -192,7 +193,7 @@ export function formatConversationHistoryForLLM(
   const result: { role: "user" | "assistant"; content: string }[] = [];
 
   for (const msg of history) {
-    const cleanedContent = msg.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    const cleanedContent = (msg.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
     if (!cleanedContent) continue;
 
     if (msg.role === "user") {
@@ -219,14 +220,15 @@ export function formatConversationHistoryForLLM(
 
 // 拼接对抗强度相关的系统指示
 function getIntensityPrompt(personal: number, global: number, prompts: SystemPromptsConfig): string {
+  if (!prompts) return "";
   const intensity = Math.min(5, Math.max(1, Math.round((personal + global) / 2)));
   switch (intensity) {
-    case 1: return prompts.intensityLevel1.replace("{intensity}", "1");
-    case 2: return prompts.intensityLevel2.replace("{intensity}", "2");
-    case 3: return prompts.intensityLevel3.replace("{intensity}", "3");
-    case 4: return prompts.intensityLevel4.replace("{intensity}", "4");
-    case 5: return prompts.intensityLevel5.replace("{intensity}", "5");
-    default: return prompts.intensityLevel3.replace("{intensity}", "3");
+    case 1: return (prompts.intensityLevel1 ?? "").replace("{intensity}", "1");
+    case 2: return (prompts.intensityLevel2 ?? "").replace("{intensity}", "2");
+    case 3: return (prompts.intensityLevel3 ?? "").replace("{intensity}", "3");
+    case 4: return (prompts.intensityLevel4 ?? "").replace("{intensity}", "4");
+    case 5: return (prompts.intensityLevel5 ?? "").replace("{intensity}", "5");
+    default: return (prompts.intensityLevel3 ?? "").replace("{intensity}", "3");
   }
 }
 
@@ -271,7 +273,7 @@ export async function getExpertTurn({
 
   // 拼接大模型 System Prompt
   const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity, systemPrompts);
-  const expertTurnPrompt = systemPrompts.expertTurnFormat.replace("{expertName}", expert.name);
+  const expertTurnPrompt = (systemPrompts?.expertTurnFormat ?? "").replace("{expertName}", expert.name);
   const systemPrompt = [
     expert.systemPrompt,
     `你的性格与气质：${expert.temperament}`,
@@ -293,7 +295,7 @@ export async function getExpertTurn({
   // 拼接当前这一轮的最新 User 问题以及本轮内先于此专家发言的其他专家的观点
   const currentTurnPreviousText = previousTurns.length
     ? "本轮专家讨论中，此前已发言记录：\n" +
-      previousTurns.map((turn) => `【${turn.expertName}】：${turn.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim()}`).join("\n\n")
+      previousTurns.map((turn) => `【${turn.expertName}】：${(turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim()}`).join("\n\n")
     : "本轮中你是第一个发言的专家。";
 
   const currentUserTurnText = [
@@ -311,47 +313,7 @@ export async function getExpertTurn({
     temperature: llmParams.expertTemperature,
     maxTokens: llmParams.maxTokens,
   });
-
-  // 解析大模型返回的 JSON 块
-  let stance = "暂无立场摘要";
-  let concern = "暂无风险摘要";
-  let recommendation = "暂无建议摘要";
-  let tradeoff = "暂无取舍摘要";
-  let displayContent = responseText;
-
-  try {
-    const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```/) || responseText.match(/({[\s\S]*?})/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[1]);
-      stance = parsed.stance || stance;
-      concern = parsed.concern || concern;
-      recommendation = parsed.recommendation || recommendation;
-      tradeoff = parsed.tradeoff || tradeoff;
-
-      displayContent = responseText.replace(jsonMatch[0], "").trim();
-    }
-  } catch (e) {
-    console.warn("Failed to parse expert JSON response, falling back to regex extraction", e);
-    const matchField = (field: string) => {
-      const regex = new RegExp(`"${field}"\\s*:\\s*"([^"]+)"`);
-      const res = responseText.match(regex);
-      return res ? res[1] : "";
-    };
-    stance = matchField("stance") || stance;
-    concern = matchField("concern") || concern;
-    recommendation = matchField("recommendation") || recommendation;
-    tradeoff = matchField("tradeoff") || tradeoff;
-  }
-
-  return {
-    content: displayContent,
-    expertStance: {
-      stance,
-      concern,
-      recommendation,
-      tradeoff,
-    },
-  };
+  return extractAndCleanJson(responseText, expert.name);
 }
 
 // 1.5 专家发言流式接口
@@ -385,7 +347,7 @@ export async function getExpertTurnStream({
   }
 
   const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity, systemPrompts);
-  const expertTurnPrompt = systemPrompts.expertTurnFormat.replace("{expertName}", expert.name);
+  const expertTurnPrompt = (systemPrompts?.expertTurnFormat ?? "").replace("{expertName}", expert.name);
   const systemPrompt = [
     expert.systemPrompt,
     `你的性格与气质：${expert.temperament}`,
@@ -403,7 +365,7 @@ export async function getExpertTurnStream({
 
   const currentTurnPreviousText = previousTurns.length
     ? "本轮专家讨论中，此前已发言记录：\n" +
-      previousTurns.map((turn) => `【${turn.expertName}】：${turn.content.replace(/<think>[\s\S]*?<\/think>/g, "").trim()}`).join("\n\n")
+      previousTurns.map((turn) => `【${turn.expertName}】：${(turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim()}`).join("\n\n")
     : "本轮中你是第一个发言的专家。";
 
   const currentUserTurnText = [
@@ -458,7 +420,7 @@ export async function getSynthesis({
     );
   }
 
-  const systemPrompt = systemPrompts.synthesisPrompt
+  const systemPrompt = (systemPrompts?.synthesisPrompt ?? "")
     .replace("{moderatorName}", moderator.name)
     .replace("{moderatorDesc}", moderator.description);
 
@@ -490,7 +452,10 @@ export async function getSynthesis({
   try {
     const jsonMatch = responseText.match(/({[\s\S]*?})/);
     if (jsonMatch) {
-      return JSON.parse(jsonMatch[1]);
+      const parsed = JSON.parse(jsonMatch[1]);
+      if (parsed && typeof parsed === "object" && "summary" in parsed) {
+        return parsed;
+      }
     }
   } catch (e) {
     console.error("Failed to parse synthesis JSON", responseText, e);
@@ -543,7 +508,7 @@ export async function getNextSpeaker({
 
   const candidateList = candidateExperts.map((exp) => `- ID: ${exp.id}, 专家名称: ${exp.name}, 判断视角: ${exp.lens}`).join("\n");
 
-  const systemPrompt = systemPrompts.nextSpeakerPrompt.replace("{candidateList}", candidateList);
+  const systemPrompt = (systemPrompts?.nextSpeakerPrompt ?? "").replace("{candidateList}", candidateList);
 
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
 
