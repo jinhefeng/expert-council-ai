@@ -39,14 +39,45 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
   const [error, setError] = useState<string | null>(null);
   const [isGeneratingExpert, setIsGeneratingExpert] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "failed">("idle");
+  const [testMsg, setTestMsg] = useState("");
+
+  async function handleTestConnection() {
+    if (!draft.botToken) return;
+    setTestStatus("testing");
+    setTestMsg("");
+    try {
+      const res = await fetch(`/api/discussions/test-bot?token=${encodeURIComponent(draft.botToken)}`);
+      const data = await res.json();
+      if (data.success && data.status === "online") {
+        setTestStatus("success");
+        setTestMsg("✓ 连接成功：外部智能体物理连接已建立，客户端已在线！");
+      } else {
+        setTestStatus("failed");
+        setTestMsg(`✗ 连接失败：${data.error || "未检测到物理连接，请确认客户端是否启动"}`);
+      }
+    } catch (e: any) {
+      setTestStatus("failed");
+      setTestMsg(`✗ 请求异常：${e.message || "网络请求异常，请稍后重试"}`);
+    }
+  }
 
   async function handleGenerateExpert() {
     if (!draft.name && !draft.title) return;
     setIsGeneratingExpert(true);
     try {
       let activeEngine = undefined;
-      const ENGINE_CONFIGS_KEY = "design-council-engine-configs";
-      const settingsStr = localStorage.getItem(ENGINE_CONFIGS_KEY);
+      const ENGINE_CONFIGS_KEY = "agent-council-engine-configs";
+      let settingsStr = localStorage.getItem(ENGINE_CONFIGS_KEY);
+      if (!settingsStr) {
+        settingsStr = localStorage.getItem("design-council-engine-configs");
+        if (settingsStr) {
+          try {
+            localStorage.setItem(ENGINE_CONFIGS_KEY, settingsStr);
+            localStorage.removeItem("design-council-engine-configs");
+          } catch (e) {}
+        }
+      }
       if (settingsStr) {
         try {
           const allConfigs = JSON.parse(settingsStr);
@@ -56,8 +87,17 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
       }
 
       let systemPrompts = undefined;
-      const SYSTEM_PROMPTS_KEY = "design-council-system-prompts";
-      const promptsStr = localStorage.getItem(SYSTEM_PROMPTS_KEY);
+      const SYSTEM_PROMPTS_KEY = "agent-council-system-prompts";
+      let promptsStr = localStorage.getItem(SYSTEM_PROMPTS_KEY);
+      if (!promptsStr) {
+        promptsStr = localStorage.getItem("design-council-system-prompts");
+        if (promptsStr) {
+          try {
+            localStorage.setItem(SYSTEM_PROMPTS_KEY, promptsStr);
+            localStorage.removeItem("design-council-system-prompts");
+          } catch (e) {}
+        }
+      }
       if (promptsStr) {
         try {
           const allPrompts = JSON.parse(promptsStr);
@@ -112,28 +152,24 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
         isExternalAgent: initialData?.isExternalAgent ?? false,
         agentType: initialData?.agentType || "openclaw",
         botToken: initialData?.botToken || "",
-        wsEndpoint: initialData?.wsEndpoint || "",
-        onebotToken: initialData?.onebotToken || "",
       });
       setError(null);
     }
   }, [isOpen, initialData]);
+
+  useEffect(() => {
+    setTestStatus("idle");
+    setTestMsg("");
+  }, [draft.botToken]);
 
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (draft.isExternalAgent) {
-      if (draft.agentType === "onebot") {
-        if (!draft.name || !draft.title || !draft.wsEndpoint) {
-          setError("请填写 OneBot 连接地址等必填项");
-          return;
-        }
-      } else {
-        if (!draft.name || !draft.title || !draft.botToken) {
-          setError("请填写 Token 等必填项");
-          return;
-        }
+      if (!draft.name || !draft.title || !draft.botToken) {
+        setError("请填写 Token 等必填项");
+        return;
       }
     } else {
       if (!draft.name || !draft.title || !draft.lens || !draft.systemPrompt) {
@@ -153,10 +189,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
       focus: draft.isExternalAgent ? [] : (draft.focus || []),
       isCustom: draft.isCustom,
       isExternalAgent: draft.isExternalAgent,
-      agentType: draft.isExternalAgent ? draft.agentType : undefined,
-      botToken: draft.isExternalAgent && draft.agentType === "openclaw" ? draft.botToken : undefined,
-      wsEndpoint: draft.isExternalAgent && draft.agentType === "onebot" ? draft.wsEndpoint : undefined,
-      onebotToken: draft.isExternalAgent && draft.agentType === "onebot" ? draft.onebotToken : undefined,
+      botToken: draft.isExternalAgent ? draft.botToken : undefined,
     };
 
     onSave(finalExpert);
@@ -224,94 +257,90 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
             </div>
 
             {draft.isExternalAgent ? (
-              <div className="external-agent-config-panel">
-                <div className="agent-type-tabs">
-                  <label className={`agent-type-tab ${draft.agentType === "openclaw" ? "is-active" : ""}`}>
+              <div className="external-agent-config-panel" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                <label className="compact-field" style={{ marginBottom: 0 }}>
+                  <span style={{ fontWeight: 600, fontSize: "13px" }}>小龙虾机器人 Token (Bot Token) *<InfoTooltip text="外部智能体插件连接到本平台时的认证 Token" /></span>
+                  <div className="token-display-wrap" style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
                     <input
-                      type="radio"
-                      name="agentType"
-                      checked={draft.agentType === "openclaw"}
-                      onChange={() => setDraft(prev => ({ ...prev, agentType: "openclaw" }))}
+                      readOnly
+                      required
+                      className="token-input-field"
+                      style={{ flex: 1, fontFamily: "var(--mono)", fontSize: "12.5px" }}
+                      value={draft.botToken || ""}
                     />
-                    🤖 OpenClaw 原生通道
-                  </label>
-                  <label className={`agent-type-tab ${draft.agentType === "onebot" ? "is-active" : ""}`}>
-                    <input
-                      type="radio"
-                      name="agentType"
-                      checked={draft.agentType === "onebot"}
-                      onChange={() => setDraft(prev => ({ ...prev, agentType: "onebot", wsEndpoint: prev.wsEndpoint || "ws://localhost:6199/ws" }))}
-                    />
-                    ⚡ OneBot 协议 (QwenPaw)
-                  </label>
-                </div>
-
-                {draft.agentType === "onebot" ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                    <label className="compact-field">
-                      <span>OneBot 反向 WebSocket 地址 *<InfoTooltip text="您本地运行的 QwenPaw/AgentScope OneBot 服务连接端口，通常为 ws://localhost:6199/ws" /></span>
-                      <input
-                        required
-                        placeholder="ws://localhost:6199/ws"
-                        value={draft.wsEndpoint || ""}
-                        onChange={e => setDraft({ ...draft, wsEndpoint: e.target.value })}
-                      />
-                    </label>
-                    <label className="compact-field">
-                      <span>Access Token (选填)<InfoTooltip text="如果在 QwenPaw 的 OneBot 设置中启用了鉴权，请填写对应的 Access Token" /></span>
-                      <input
-                        placeholder="留空或填写 Access Token"
-                        value={draft.onebotToken || ""}
-                        onChange={e => setDraft({ ...draft, onebotToken: e.target.value })}
-                      />
-                    </label>
-                    <p style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5", marginTop: "4px" }}>
-                      💡 <strong>配置方法</strong>：在 QwenPaw Desktop 客户端中打开 <strong>“OneBot 设置”</strong> 并启用它。WebSocket 端口填写为 <code>6199</code>。平台连接成功后，侧边栏状态将同步亮起绿色“在线”圆点。
-                    </p>
+                    <button
+                      type="button"
+                      className={`tech-button ${copied ? "is-copied" : ""}`}
+                      onClick={() => {
+                        if (draft.botToken) {
+                          navigator.clipboard.writeText(draft.botToken);
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        }
+                      }}
+                    >
+                      {copied ? "已复制 ✓" : "复制"}
+                    </button>
+                    <button
+                      type="button"
+                      className="tech-button"
+                      onClick={() => {
+                        setDraft(prev => ({
+                          ...prev,
+                          botToken: `dc_bot_${Math.random().toString(36).substring(2, 10)}_${Date.now().toString(36)}`
+                        }));
+                      }}
+                    >
+                      重新生成
+                    </button>
                   </div>
-                ) : (
-                  <label className="compact-field" style={{ marginBottom: 0 }}>
-                    <span style={{ fontWeight: 600, fontSize: "13px" }}>小龙虾机器人 Token (Bot Token) *<InfoTooltip text="外部智能体插件连接 to 本平台时的认证 Token" /></span>
-                    <div className="token-display-wrap" style={{ display: "flex", gap: "8px", marginTop: "6px" }}>
-                      <input
-                        readOnly
-                        required
-                        className="token-input-field"
-                        style={{ flex: 1, fontFamily: "var(--mono)", fontSize: "12.5px" }}
-                        value={draft.botToken || ""}
+                </label>
+                <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "8px", padding: "12px", borderRadius: "8px", background: "var(--surface-strong)", border: "1px solid var(--line-strong)" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span 
+                        style={{ 
+                          width: "8px", 
+                          height: "8px", 
+                          borderRadius: "50%", 
+                          display: "inline-block",
+                          background: testStatus === "success" ? "#10b981" : testStatus === "failed" ? "#ef4444" : "#9ca3af",
+                          boxShadow: testStatus === "success" 
+                            ? "0 0 8px #10b981" 
+                            : testStatus === "failed" 
+                              ? "0 0 8px #ef4444" 
+                              : "none",
+                          animation: testStatus === "testing" ? "online-pulse 1s infinite alternate" : "none"
+                        }} 
                       />
-                      <button
-                        type="button"
-                        className={`tech-button ${copied ? "is-copied" : ""}`}
-                        onClick={() => {
-                          if (draft.botToken) {
-                            navigator.clipboard.writeText(draft.botToken);
-                            setCopied(true);
-                            setTimeout(() => setCopied(false), 2000);
-                          }
-                        }}
-                      >
-                        {copied ? "已复制 ✓" : "复制"}
-                      </button>
-                      <button
-                        type="button"
-                        className="tech-button"
-                        onClick={() => {
-                          setDraft(prev => ({
-                            ...prev,
-                            botToken: `dc_bot_${Math.random().toString(36).substring(2, 10)}_${Date.now().toString(36)}`
-                          }));
-                        }}
-                      >
-                        重置
-                      </button>
+                      <span style={{ fontSize: "13px", fontWeight: 500, color: "var(--muted)" }}>
+                        {testStatus === "testing" ? "正在检测链路..." : testStatus === "success" ? "已连接 (Online)" : testStatus === "failed" ? "已离线 (Offline)" : "未检测连通性"}
+                      </span>
                     </div>
-                    <p style={{ fontSize: "12px", color: "var(--muted)", marginTop: "12px", lineHeight: "1.5" }}>
-                      💡 <strong>配置方法</strong>：在本地运行的小龙虾 (OpenClaw) 插件中，配置 WebSocket 连接地址为：<br />
-                      <code>ws://localhost:18788/bot</code>，并填入此 Token。
-                    </p>
-                  </label>
-                )}
+                    <button
+                      type="button"
+                      className="tech-button"
+                      disabled={testStatus === "testing" || !draft.botToken}
+                      onClick={handleTestConnection}
+                      style={{ padding: "6px 16px", fontSize: "12.5px", background: "var(--surface-strong)", border: "1px solid var(--line-strong)" }}
+                    >
+                      {testStatus === "testing" ? "测试中..." : "测试连通性"}
+                    </button>
+                  </div>
+                  {testMsg && (
+                    <div style={{ 
+                      fontSize: "12.5px", 
+                      color: testStatus === "success" ? "#10b981" : "#ef4444", 
+                      lineHeight: "1.4",
+                      marginTop: "2px"
+                    }}>
+                      {testMsg}
+                    </div>
+                  )}
+                </div>
+                <p style={{ fontSize: "12px", color: "var(--muted)", lineHeight: "1.5", marginTop: "8px" }}>
+                  💡 <strong>配置方法</strong>：复制上方生成的 Bot Token。在本地 Python 客户端（QwenPaw）或者 DesignCouncil 频道的配置文件中，将 <code>botToken</code> 设置为该值，并将连接地址设置为 <code>ws://localhost:18788/bot</code>。
+                </p>
               </div>
             ) : (
               <>

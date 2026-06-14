@@ -1,6 +1,6 @@
 # 外部自主智能体 (小龙虾) 对接技术规范说明书 (External Agents Integration Spec)
 
-本说明书用于记录 `design-council-ai` 平台接入外部自主智能体（如 OpenClaw、QwenPaw 等小龙虾产品）的通用技术规范，以供后续接入其他厂商的龙虾智能体时参考。
+本说明书用于记录 `agent-council-ai` 平台接入外部自主智能体（如 OpenClaw、QwenPaw 等小龙虾产品）的通用技术规范，以供后续接入其他厂商的龙虾智能体时参考。
 
 ---
 
@@ -8,7 +8,7 @@
 
 为了避免平台（Server）不断去适配各类层出不穷的智能体网关（Client），我们采用类似 Telegram Bot 的**“服务器-客户端”反向接入模式**。
 
-*   **平台 (design-council-ai)**：充当中心服务器，不主动建立到智能体的连接。平台负责提供标准身份校验，暴露统一的 WebSocket/HTTP 接口。
+*   **平台 (agent-council-ai)**：充当中心服务器，不主动建立到智能体的连接。平台负责提供标准身份校验，暴露统一的 WebSocket/HTTP 接口。
 *   **智能体 (OpenClaw / QwenPaw)**：充当客户端，在本地（或其云端）运行。通过安装我们为其开发的**连接通道插件 (Channel Adapter / Extension)**，以客户端身份长连接接入我们的平台。
 *   **长记忆与上下文**：由于小龙虾（自主智能体）本身通常在其本地持有会话（Session），它自身具备上下文维护能力。因此平台与智能体通信时，仅需**增量推送新消息**，无需每轮重复发送完整历史。
 
@@ -106,6 +106,12 @@
 2. **消息段数组** (`Array`): 遍历并合并其中类型为 `"text"` 的片段（`msg.data?.text`）。
 3. **单个消息段对象** (`Object`): 判断若类型为 `"text"`，提取其内含的文本内容，以防止隐式强转导致前端接收到 `[object Object]`。
 
+### 2.5 流式尾端 JSON 拦截与 Council 统一清洗规范
+
+为了使流式拦截和卡片解析在 Council 平台做到全局一致，所有的清洗与前置防抖阻断统一内聚到 Council 服务端/前端核心渲染管道中：
+1. **纯净流式回传**：外部智能体通道插件（如 QwenPaw Adapter）和内置专家接口应原封不动地通过流式数据帧把所有 Token（包括最后的 ```json 卡片大括号）回传给 Council。
+2. **实时前置裁剪**：Council 侧前端接收到流式 chunk 后，在交给 React 渲染前，统一执行 `cleanStreamingJson`，根据 stance 等特征指纹和防抖安全距离，实时识别并截除未生成完毕的 JSON 段，保证用户聊天气泡中没有任何 JSON 字符串闪烁或残留。
+3. **收尾统一清洗**：当收到 `stream_done`（或非流式 API 结束）时，无论外部智能体是否已在 `reply.done` 携带了解析后的 `expertStance` 字典，Council 服务端/前端均应统一对最终全文本进行 `extractAndCleanJson` 清洗。提取出的干净文本用于前端展示和历史消息的持久化保存，防止任何 JSON 块混入已存档的正文中。
 
 ---
 
@@ -133,18 +139,18 @@
                               | WebSocket 协议
                               v
                  +--------------------------+
-                 |    Design Council Platform|
+                 |    Agent Council Platform |
                  +--------------------------+
 ```
 
-### 3.1 OpenClaw 插件 (`openclaw-channel-design-council`)
+### 3.1 OpenClaw 插件 (`openclaw-channel-agent-council`)
 *   **技术栈**: TypeScript / Node.js
 *   **结构**:
     - `index.ts` 注册为 OpenClaw 的一个自定义 Channel，读取 `config.json` 里的 `botToken` 和 `serverUrl`。
     - 启动时自动用 `ws` 库发起长连接。
     - 收到 `turn.active` 时，触发本地 OpenClaw 的 `session.spawn` 开启一次推理，并捕获 `stdout` 或模型的流式生成，再转发回 `reply.chunk`。
 
-### 3.2 QwenPaw 插件 (`qwenpaw-adapter-designcouncil`)
+### 3.2 QwenPaw 插件 (`qwenpaw-adapter-agentcouncil`)
 *   **技术栈**: Python (基于 AgentScope 协议)
 *   **结构**:
     - 实现为一个自定义的 `AgentScope` Message Channel 装饰器或子类。

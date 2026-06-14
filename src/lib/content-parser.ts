@@ -263,3 +263,45 @@ export function extractAndCleanJson(rawText: string, expertName: string): {
     expertStance: { stance, concern, recommendation, tradeoff }
   };
 }
+
+/**
+ * 流式过程中，在前台实时预测并裁剪掉尾部的 JSON 块。
+ * 兼具特征指纹识别（包含 stance/concern 等关键字）和距离防抖前置机制，防止 JSON 字符污染聊天气泡。
+ */
+export function cleanStreamingJson(text: string): string {
+  if (!text) return "";
+
+  const idxJson = text.lastIndexOf("```json");
+  const idxBackticks = text.lastIndexOf("```");
+
+  let idxBrace = -1;
+  const braceMatches = [...text.matchAll(/[\s\n]\{/g)];
+  if (braceMatches.length > 0) {
+    idxBrace = braceMatches[braceMatches.length - 1].index!;
+  }
+
+  let startIdx = -1;
+  if (idxJson !== -1) {
+    startIdx = idxJson;
+  } else if (idxBackticks !== -1) {
+    startIdx = idxBackticks;
+  } else if (idxBrace !== -1) {
+    startIdx = idxBrace;
+  }
+
+  if (startIdx !== -1) {
+    const remainingText = text.substring(startIdx);
+    const hasStanceKey = /"stance"|'stance'|stance\s*:/i.test(remainingText) ||
+                          /"concern"|'concern'|concern\s*:/i.test(remainingText) ||
+                          /"recommendation"|'recommendation'|recommendation\s*:/i.test(remainingText) ||
+                          /"tradeoff"|'tradeoff'|tradeoff\s*:/i.test(remainingText);
+
+    const distToTrail = text.length - startIdx;
+    // 命中指纹，或者虽未命中指纹但距离尾端极近（前置防抖，例如刚吐出 ```json ），立即裁剪阻断
+    if (hasStanceKey || distToTrail < 15) {
+      return text.substring(0, startIdx).trim();
+    }
+  }
+
+  return text;
+}

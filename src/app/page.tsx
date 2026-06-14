@@ -14,7 +14,7 @@ import remarkBreaks from "remark-breaks";
 import { experts as defaultExperts, moderatorModes, mergeSystemExperts } from "@/lib/experts";
 import { ExpertModal } from "@/components/ExpertModal";
 import { LocalStorageService } from "@/lib/storage-service";
-import { extractAndCleanJson } from "@/lib/content-parser";
+import { extractAndCleanJson, cleanStreamingJson } from "@/lib/content-parser";
 import {
   Expert,
   LLMEngineConfig,
@@ -28,6 +28,33 @@ import {
 } from "@/lib/types";
 
 const TENANT_ID = "default-org";
+
+function ensureString(val: any): string {
+  if (val === null || val === undefined) {
+    return "";
+  }
+  if (typeof val === "string") {
+    return val;
+  }
+  if (Array.isArray(val)) {
+    return val
+      .map((item) => {
+        if (item === null || item === undefined) {
+          return "";
+        }
+        if (typeof item === "object") {
+          return `- ${JSON.stringify(item)}`;
+        }
+        return `- ${item}`;
+      })
+      .filter((line) => line.trim() !== "")
+      .join("\n");
+  }
+  if (typeof val === "object") {
+    return JSON.stringify(val);
+  }
+  return String(val);
+}
 
 export default function Home() {
   // 存储服务实例
@@ -311,7 +338,11 @@ export default function Home() {
               if (resolver) {
                 resolver.text += message.chunk;
                 if (resolver.onChunk) {
-                  resolver.onChunk(resolver.text);
+                  if (message.isThought) {
+                    resolver.onChunk(resolver.text);
+                  } else {
+                    resolver.onChunk(cleanStreamingJson(resolver.text));
+                  }
                 }
               }
               break;
@@ -322,11 +353,14 @@ export default function Home() {
                 const curExpert = allExpertsRef.current.find(e => e.id === message.expertId);
                 const curExpertName = curExpert ? curExpert.name : "";
                 
+                // 强制对最终发言内容进行清洗，剪除尾部 JSON 卡片，确保历史正文完美呈现
                 const cleaned = extractAndCleanJson(doneResolver.text, curExpertName);
+                const content = cleaned.content;
+                const expertStance = message.expertStance || cleaned.expertStance;
 
                 doneResolver.resolve({
-                  content: cleaned.content,
-                  expertStance: cleaned.expertStance
+                  content,
+                  expertStance
                 });
                 delete wsResolversRef.current[message.expertId];
               }
@@ -877,7 +911,14 @@ export default function Home() {
                 fullContent += contentChunk;
               }
 
-              if (onChunk) onChunk(fullContent);
+              const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
+              if (onChunk) {
+                if (isInsideReasoning) {
+                  onChunk(fullContent);
+                } else {
+                  onChunk(cleanStreamingJson(fullContent));
+                }
+              }
             } catch (e) {}
           }
         }
@@ -2056,10 +2097,10 @@ export default function Home() {
                         <div className="assistant-result" style={{ marginTop: "10px" }}>
                           <div className="result-card" style={{ borderLeft: "3px solid var(--amber)", borderRadius: "8px" }}>
                             <div className="result-grid">
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>立场观点：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.expertStance.stance}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>关键风险：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.expertStance.concern}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>实施建议：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.expertStance.recommendation}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>方案取舍：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{message.expertStance.tradeoff}</ReactMarkdown></div></div>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>立场观点：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{ensureString(message.expertStance.stance)}</ReactMarkdown></div></div>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>关键风险：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{ensureString(message.expertStance.concern)}</ReactMarkdown></div></div>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>实施建议：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{ensureString(message.expertStance.recommendation)}</ReactMarkdown></div></div>
+                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>方案取舍：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{ensureString(message.expertStance.tradeoff)}</ReactMarkdown></div></div>
                             </div>
                           </div>
                         </div>
@@ -2087,7 +2128,7 @@ export default function Home() {
                   </svg>
                 </div>
                 <p style={{ fontSize: "12px", fontWeight: "700", letterSpacing: "1.5px", color: "var(--amber)", textTransform: "uppercase", marginBottom: "12px", opacity: 0.8 }}>
-                  Design Council AI
+                  Agent Council AI
                 </p>
                 <h3 style={{ fontSize: "22px", fontWeight: "600", color: "var(--ink)", marginBottom: "16px", letterSpacing: "0.5px" }}>
                   开启一场专家圆桌会议

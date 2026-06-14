@@ -194,7 +194,7 @@ export default function AdminPage() {
   function handleExportFullConfig() {
     const fullConfig = {
       version: "1.0",
-      type: "design-council-ai-full-config",
+      type: "agent-council-ai-full-config",
       engineConfigs,
       systemOverrides,
       customExperts,
@@ -217,7 +217,7 @@ export default function AdminPage() {
     if (!fullImportDraft.trim()) return;
     try {
       const data = JSON.parse(fullImportDraft);
-      if (data.type !== "design-council-ai-full-config") {
+      if (data.type !== "agent-council-ai-full-config" && data.type !== "design-council-ai-full-config") {
         alert("导入失败：该 JSON 数据不是合法的全站配置格式。");
         return;
       }

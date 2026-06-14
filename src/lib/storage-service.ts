@@ -34,14 +34,25 @@ export interface StorageService {
   saveBusinessDefaultsConfig(tenantId: string, config: BusinessDefaultsConfig): Promise<void>;
 }
 
-const MEETINGS_KEY = "design-council-meetings";
-const CUSTOM_EXPERTS_KEY = "design-council-custom-experts";
-const ENGINE_CONFIGS_KEY = "design-council-engine-configs";
-const SYSTEM_EXPERTS_OVERRIDES_KEY = "design-council-system-experts-overrides";
-const USER_PROFILE_KEY = "design-council-user-profile";
-const LLM_PARAMS_KEY = "design-council-llm-params";
-const SYSTEM_PROMPTS_KEY = "design-council-system-prompts";
-const BUSINESS_DEFAULTS_KEY = "design-council-business-defaults";
+const MEETINGS_KEY = "agent-council-meetings";
+const CUSTOM_EXPERTS_KEY = "agent-council-custom-experts";
+const ENGINE_CONFIGS_KEY = "agent-council-engine-configs";
+const SYSTEM_EXPERTS_OVERRIDES_KEY = "agent-council-system-experts-overrides";
+const USER_PROFILE_KEY = "agent-council-user-profile";
+const LLM_PARAMS_KEY = "agent-council-llm-params";
+const SYSTEM_PROMPTS_KEY = "agent-council-system-prompts";
+const BUSINESS_DEFAULTS_KEY = "agent-council-business-defaults";
+
+const OLD_KEYS_MAP: Record<string, string> = {
+  "agent-council-meetings": "design-council-meetings",
+  "agent-council-custom-experts": "design-council-custom-experts",
+  "agent-council-engine-configs": "design-council-engine-configs",
+  "agent-council-system-experts-overrides": "design-council-system-experts-overrides",
+  "agent-council-user-profile": "design-council-user-profile",
+  "agent-council-llm-params": "design-council-llm-params",
+  "agent-council-system-prompts": "design-council-system-prompts",
+  "agent-council-business-defaults": "design-council-business-defaults"
+};
 
 export const DEFAULT_LLM_PARAMS: LLMParamsConfig = {
   maxTokens: 4000,
@@ -80,10 +91,33 @@ export class LocalStorageService implements StorageService {
     return typeof window !== "undefined";
   }
 
+  private getWithMigration(key: string): string | null {
+    if (!this.isClient()) return null;
+    const value = window.localStorage["getItem"](key);
+    if (value !== null) {
+      return value;
+    }
+    const oldKey = OLD_KEYS_MAP[key];
+    if (oldKey) {
+      const oldValue = window.localStorage["getItem"](oldKey);
+      if (oldValue !== null) {
+        try {
+          window.localStorage.setItem(key, oldValue);
+          window.localStorage.removeItem(oldKey);
+          console.log(`[StorageMigration] Migrated key "${oldKey}" to "${key}" successfully.`);
+          return oldValue;
+        } catch (e) {
+          console.error(`[StorageMigration] Failed to migrate key "${oldKey}" to "${key}":`, e);
+        }
+      }
+    }
+    return null;
+  }
+
   async getMeetings(tenantId: string): Promise<Meeting[]> {
     if (!this.isClient()) return [];
     try {
-      const data = window.localStorage.getItem(MEETINGS_KEY);
+      const data = this.getWithMigration(MEETINGS_KEY);
       if (!data) return [];
       const meetings = JSON.parse(data) as Meeting[];
       return meetings.filter(m => (m.tenantId || "default-org") === tenantId);
@@ -96,7 +130,7 @@ export class LocalStorageService implements StorageService {
   async saveMeeting(tenantId: string, meeting: Meeting): Promise<void> {
     if (!this.isClient()) return;
     try {
-      const data = window.localStorage.getItem(MEETINGS_KEY);
+      const data = this.getWithMigration(MEETINGS_KEY);
       let meetings = data ? (JSON.parse(data) as Meeting[]) : [];
       meetings = meetings.filter(m => m.id !== meeting.id);
       meetings.push({ ...meeting, tenantId });
@@ -109,7 +143,7 @@ export class LocalStorageService implements StorageService {
   async deleteMeeting(tenantId: string, id: string): Promise<void> {
     if (!this.isClient()) return;
     try {
-      const data = window.localStorage.getItem(MEETINGS_KEY);
+      const data = this.getWithMigration(MEETINGS_KEY);
       if (!data) return;
       let meetings = JSON.parse(data) as Meeting[];
       meetings = meetings.filter(m => m.id !== id);
@@ -122,7 +156,7 @@ export class LocalStorageService implements StorageService {
   async getCustomExperts(tenantId: string): Promise<Expert[]> {
     if (!this.isClient()) return [];
     try {
-      const data = window.localStorage.getItem(CUSTOM_EXPERTS_KEY);
+      const data = this.getWithMigration(CUSTOM_EXPERTS_KEY);
       if (!data) return [];
       const experts = JSON.parse(data) as Expert[];
       return experts.filter(e => (e.tenantId || "default-org") === tenantId);
@@ -135,7 +169,7 @@ export class LocalStorageService implements StorageService {
   async saveCustomExpert(tenantId: string, expert: Expert): Promise<void> {
     if (!this.isClient()) return;
     try {
-      const data = window.localStorage.getItem(CUSTOM_EXPERTS_KEY);
+      const data = this.getWithMigration(CUSTOM_EXPERTS_KEY);
       let experts = data ? (JSON.parse(data) as Expert[]) : [];
       experts = experts.filter(e => e.id !== expert.id);
       experts.push({ ...expert, tenantId });
@@ -148,7 +182,7 @@ export class LocalStorageService implements StorageService {
   async deleteCustomExpert(tenantId: string, id: string): Promise<void> {
     if (!this.isClient()) return;
     try {
-      const data = window.localStorage.getItem(CUSTOM_EXPERTS_KEY);
+      const data = this.getWithMigration(CUSTOM_EXPERTS_KEY);
       if (!data) return;
       let experts = JSON.parse(data) as Expert[];
       experts = experts.filter(e => e.id !== id);
@@ -161,7 +195,7 @@ export class LocalStorageService implements StorageService {
   async getEngineConfigs(tenantId: string): Promise<LLMEngineConfig[]> {
     if (!this.isClient()) return [];
     try {
-      const data = window.localStorage.getItem(ENGINE_CONFIGS_KEY);
+      const data = this.getWithMigration(ENGINE_CONFIGS_KEY);
       if (!data) return [];
       const configs = JSON.parse(data) as LLMEngineConfig[];
       return configs.filter(c => (c.tenantId || "default-org") === tenantId);
@@ -174,7 +208,7 @@ export class LocalStorageService implements StorageService {
   async saveEngineConfigs(tenantId: string, configs: LLMEngineConfig[]): Promise<void> {
     if (!this.isClient()) return;
     try {
-      const data = window.localStorage.getItem(ENGINE_CONFIGS_KEY);
+      const data = this.getWithMigration(ENGINE_CONFIGS_KEY);
       let allConfigs = data ? (JSON.parse(data) as LLMEngineConfig[]) : [];
       allConfigs = allConfigs.filter(c => (c.tenantId || "default-org") !== tenantId);
       const newConfigs = configs.map(c => ({ ...c, tenantId }));
@@ -188,7 +222,7 @@ export class LocalStorageService implements StorageService {
   async getSystemExpertsOverrides(tenantId: string): Promise<Partial<Expert>[]> {
     if (!this.isClient()) return [];
     try {
-      const data = window.localStorage.getItem(SYSTEM_EXPERTS_OVERRIDES_KEY);
+      const data = this.getWithMigration(SYSTEM_EXPERTS_OVERRIDES_KEY);
       if (!data) return [];
       const overrides = JSON.parse(data) as (Partial<Expert> & { tenantId?: string })[];
       return overrides.filter(o => (o.tenantId || "default-org") === tenantId);
@@ -201,7 +235,7 @@ export class LocalStorageService implements StorageService {
   async saveSystemExpertsOverrides(tenantId: string, overrides: Partial<Expert>[]): Promise<void> {
     if (!this.isClient()) return;
     try {
-      const data = window.localStorage.getItem(SYSTEM_EXPERTS_OVERRIDES_KEY);
+      const data = this.getWithMigration(SYSTEM_EXPERTS_OVERRIDES_KEY);
       let allOverrides = data ? (JSON.parse(data) as (Partial<Expert> & { tenantId?: string })[]) : [];
       allOverrides = allOverrides.filter(o => (o.tenantId || "default-org") !== tenantId);
       const newOverrides = overrides.map(o => ({ ...o, tenantId }));
@@ -215,7 +249,7 @@ export class LocalStorageService implements StorageService {
   async getUserProfile(tenantId: string): Promise<UserProfile> {
     if (!this.isClient()) return { name: "产品经理", title: "需求提出人" };
     try {
-      const data = window.localStorage.getItem(USER_PROFILE_KEY);
+      const data = this.getWithMigration(USER_PROFILE_KEY);
       if (!data) return { name: "产品经理", title: "需求提出人" };
       return JSON.parse(data) as UserProfile;
     } catch (e) {
@@ -237,7 +271,7 @@ export class LocalStorageService implements StorageService {
   async getLLMParamsConfig(tenantId: string): Promise<LLMParamsConfig> {
     if (!this.isClient()) return DEFAULT_LLM_PARAMS;
     try {
-      const data = window.localStorage.getItem(LLM_PARAMS_KEY);
+      const data = this.getWithMigration(LLM_PARAMS_KEY);
       if (!data) return DEFAULT_LLM_PARAMS;
       const all = JSON.parse(data) as LLMParamsConfig[];
       return all.find(c => (c.tenantId || "default-org") === tenantId) || DEFAULT_LLM_PARAMS;
@@ -249,7 +283,7 @@ export class LocalStorageService implements StorageService {
   async saveLLMParamsConfig(tenantId: string, config: LLMParamsConfig): Promise<void> {
     if (!this.isClient()) return;
     try {
-      const data = window.localStorage.getItem(LLM_PARAMS_KEY);
+      const data = this.getWithMigration(LLM_PARAMS_KEY);
       let all = data ? (JSON.parse(data) as LLMParamsConfig[]) : [];
       all = all.filter(c => (c.tenantId || "default-org") !== tenantId);
       all.push({ ...config, tenantId });
@@ -262,7 +296,7 @@ export class LocalStorageService implements StorageService {
   async getSystemPromptsConfig(tenantId: string): Promise<SystemPromptsConfig> {
     if (!this.isClient()) return DEFAULT_SYSTEM_PROMPTS;
     try {
-      const data = window.localStorage.getItem(SYSTEM_PROMPTS_KEY);
+      const data = this.getWithMigration(SYSTEM_PROMPTS_KEY);
       if (!data) return DEFAULT_SYSTEM_PROMPTS;
       const all = JSON.parse(data) as SystemPromptsConfig[];
       const config = all.find(c => (c.tenantId || "default-org") === tenantId);
@@ -276,7 +310,7 @@ export class LocalStorageService implements StorageService {
   async saveSystemPromptsConfig(tenantId: string, config: SystemPromptsConfig): Promise<void> {
     if (!this.isClient()) return;
     try {
-      const data = window.localStorage.getItem(SYSTEM_PROMPTS_KEY);
+      const data = this.getWithMigration(SYSTEM_PROMPTS_KEY);
       let all = data ? (JSON.parse(data) as SystemPromptsConfig[]) : [];
       all = all.filter(c => (c.tenantId || "default-org") !== tenantId);
       all.push({ ...config, tenantId });
@@ -289,7 +323,7 @@ export class LocalStorageService implements StorageService {
   async getBusinessDefaultsConfig(tenantId: string): Promise<BusinessDefaultsConfig> {
     if (!this.isClient()) return DEFAULT_BUSINESS_DEFAULTS;
     try {
-      const data = window.localStorage.getItem(BUSINESS_DEFAULTS_KEY);
+      const data = this.getWithMigration(BUSINESS_DEFAULTS_KEY);
       if (!data) return DEFAULT_BUSINESS_DEFAULTS;
       const all = JSON.parse(data) as BusinessDefaultsConfig[];
       return all.find(c => (c.tenantId || "default-org") === tenantId) || DEFAULT_BUSINESS_DEFAULTS;
@@ -301,7 +335,7 @@ export class LocalStorageService implements StorageService {
   async saveBusinessDefaultsConfig(tenantId: string, config: BusinessDefaultsConfig): Promise<void> {
     if (!this.isClient()) return;
     try {
-      const data = window.localStorage.getItem(BUSINESS_DEFAULTS_KEY);
+      const data = this.getWithMigration(BUSINESS_DEFAULTS_KEY);
       let all = data ? (JSON.parse(data) as BusinessDefaultsConfig[]) : [];
       all = all.filter(c => (c.tenantId || "default-org") !== tenantId);
       all.push({ ...config, tenantId });
