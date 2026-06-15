@@ -17,8 +17,28 @@
 
 ### TODO
 
-
-## ✅ 已完成 (Done)
+- [x] (2026-06-15) 🎨 体验优化：点击“提炼结论/更新结论”时，自动平滑滚动到聊天流底部“正在提炼”的取消按钮处，提供即时的操作控制反馈。
+  - [x] 1. 在 `page.tsx` 的 `handleGenerateConclusion` 函数中，在设为 true 状态后延迟调用容器的滚动沉底。
+  - [x] 2. 验证长消息记录下的滚动定位表现。
+- [x] (2026-06-15) 🎨 体验优化：修复后台提示词管理面板中“已修改”/“默认”标签与“恢复默认”按钮视觉不对齐的缺陷
+  - [x] 1. 将 `admin/page.tsx` 中 `PromptLabelHeader` 组件内的状态标签与操作按钮统一配置为 `inline-flex` 布局和等高盒模型。
+  - [x] 2. 将“恢复默认”重构为纯文字下划线链接（保留对齐和抽象复用），摒弃臃肿的胶囊按钮外观。
+  - [x] 3. 在 Mac 浏览器上重新验证其垂直方向的对齐效果。
+- [x] (2026-06-15) 🔮 架构重构：基于插槽占位符的内部专家系统提示词（System Prompt）模板化重构
+  - [x] 1. 升级 `storage-service.ts` 中的默认出厂 `expertTurnFormat` 系统提示词模板，引入 `{lens}`, `{temperament}`, `{focus}`, `{systemPrompt}`, `{intensityPrompt}` 等占位符，使其成为人设与格式的统一模板。
+  - [x] 2. 在 `model-router.ts` 中废除硬编码数组 `join("\n\n")` 拼接人设特质的方式，改为在 `expertTurnFormat` 模板中执行全套插槽占位符的正则/字符串精准替换。
+  - [x] 3. 运行 `npx tsc --noEmit` 进行 TypeScript 校验与格式/特质兼容替换验证。
+  - [x] 4. 在后台系统提示词管理面板添加宏观出厂/自定义状态比对指示角标（🟢 出厂默认配置 / 🟡 已自定义修改），为 11 个具体的提示词字段提供独立的细粒度状态指示（🟢 默认 / 🟡 已修改）以及单项的 `[恢复默认]` 链接，并将所有繁琐参数说明 100% 补全后移入精美悬浮问号（InfoTooltip）中，同时通过全局 CSS 样式强制 `.compact-field` 的 `width: 100%` 并优化 flex 容器布局，彻底解决右侧控制项折行以及垂直方向左右错位不对齐的问题。
+- [x] (2026-06-15) 🐛 缺陷修复：修复 QwenPaw 外部会话 ID 缺失导致跨会议上下文串线的问题
+  - [x] 1. 在前端 `page.tsx` 发送 `request_turn` 消息时，将当前真实的 `meetingId: meeting.id` 补齐进 WebSocket 发送载荷。
+  - [x] 2. 在 QwenPaw 通道 Python 适配器中验证 `session_id` 接收和多会话隔离是否表现正确。
+- [x] (2026-06-15) 🎨 体验优化：修复已归档会议解除锁定后刷新页面重新锁定的问题
+  - [x] 1. 在 `page.tsx` 页面挂载时通过 localStorage 读取 `DC_unlocked_meetings` 恢复已解锁的会议状态。
+  - [x] 2. 引入 `useEffect` 自动将 `unlockedComposers` 的内存变更同步持久化到本地 localStorage。
+- [x] (2026-06-15) 🎨 体验优化：会议列表归档与排序靠后优化 (可视化层变更)
+  - [x] 1. 在 `page.tsx` 中引入 `sortedMeetings` 计算属性，基于已有的 `finalConclusion` 字段进行已归档下沉排序。
+  - [x] 2. 调整侧边栏渲染，为有结论的项增加 `.is-archived` 类名，并在标题旁注入“已归档”精致角标。
+  - [x] 3. 在 `globals.css` 中配置已归档卡片的降低透明度与 Hover 过渡动画。
 - [x] (2026-06-15) 🐛 缺陷修复：修复专家立场卡片属性非 string (如 Array) 导致 ReactMarkdown 渲染崩溃的问题
   - [x] 1. 在 `page.tsx` 中新增 `ensureString` 辅助函数提供容错转换，将数组自动格式化为无序列表 Markdown。
   - [x] 2. 在 `page.tsx` 的专家立场卡片渲染中对这四个字段调用该函数进行防御包装。

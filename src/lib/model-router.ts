@@ -273,14 +273,15 @@ export async function getExpertTurn({
 
   // 拼接大模型 System Prompt
   const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity, systemPrompts);
-  const expertTurnPrompt = (systemPrompts?.expertTurnFormat ?? "").replace("{expertName}", expert.name);
-  const systemPrompt = [
-    expert.systemPrompt,
-    `你的性格与气质：${expert.temperament}`,
-    `你关注的焦点：${expert.focus.join("、")}`,
-    intensityPrompt,
-    expertTurnPrompt
-  ].join("\n\n");
+  const focusStr = Array.isArray(expert.focus) ? expert.focus.join("、") : (expert.focus || "无特定焦点");
+
+  const systemPrompt = (systemPrompts?.expertTurnFormat ?? "")
+    .replace(/{expertName}/g, expert.name || "")
+    .replace(/{lens}/g, expert.lens || "全局评估")
+    .replace(/{temperament}/g, expert.temperament || "中立冷静")
+    .replace(/{focus}/g, focusStr)
+    .replace(/{systemPrompt}/g, expert.systemPrompt || "")
+    .replace(/{intensityPrompt}/g, intensityPrompt);
 
 
 
@@ -347,14 +348,15 @@ export async function getExpertTurnStream({
   }
 
   const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity, systemPrompts);
-  const expertTurnPrompt = (systemPrompts?.expertTurnFormat ?? "").replace("{expertName}", expert.name);
-  const systemPrompt = [
-    expert.systemPrompt,
-    `你的性格与气质：${expert.temperament}`,
-    `你关注的焦点：${expert.focus.join("、")}`,
-    intensityPrompt,
-    expertTurnPrompt
-  ].join("\n\n");
+  const focusStr = Array.isArray(expert.focus) ? expert.focus.join("、") : (expert.focus || "无特定焦点");
+
+  const systemPrompt = (systemPrompts?.expertTurnFormat ?? "")
+    .replace(/{expertName}/g, expert.name || "")
+    .replace(/{lens}/g, expert.lens || "全局评估")
+    .replace(/{temperament}/g, expert.temperament || "中立冷静")
+    .replace(/{focus}/g, focusStr)
+    .replace(/{systemPrompt}/g, expert.systemPrompt || "")
+    .replace(/{intensityPrompt}/g, intensityPrompt);
 
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
 

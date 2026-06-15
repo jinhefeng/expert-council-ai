@@ -1113,6 +1113,7 @@ h3 {
 .compact-field {
   display: block;
   margin-top: 12px;
+  width: 100%;
 }
 
 .compact-field span {
@@ -1518,6 +1519,36 @@ h3 {
 .meeting-item-actions button.btn-delete:hover {
   color: var(--red);
   background: var(--red-soft);
+}
+
+/* 已归档会议的可视化展示 */
+.meeting-item.is-archived {
+  opacity: 0.65;
+  background: rgba(255, 254, 250, 0.45);
+  border-style: dashed;
+}
+
+.meeting-item.is-archived:hover {
+  opacity: 0.9;
+  background: rgba(255, 254, 250, 0.75);
+}
+
+.meeting-item.is-archived.is-active {
+  opacity: 0.95;
+  background: var(--amber-soft);
+  border-style: solid;
+}
+
+.meeting-item-archive-badge {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+  background: rgba(184, 134, 11, 0.08);
+  border: 1px solid rgba(184, 134, 11, 0.15);
+  padding: 1.5px 5.5px;
+  border-radius: 4px;
+  line-height: 1;
+  text-transform: uppercase;
 }
 
 /* 三栏布局重构支持 */
@@ -2036,3 +2067,57 @@ h3 {
 .modal-form-content input[type="range"] {
   accent-color: var(--amber);
 }
+
+/* ==========================================================================
+   Admin Console Badge & Button Pills
+   ========================================================================== */
+
+.admin-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  height: 16px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  box-sizing: border-box;
+  margin: 0 !important; /* Force override of .compact-field span styles */
+}
+
+.admin-badge-pill.is-modified {
+  color: var(--amber);
+  border: 1px solid var(--amber-soft);
+  background: rgba(245, 158, 11, 0.04);
+}
+
+.admin-badge-pill.is-default {
+  color: var(--green);
+  border: 1px solid var(--green-soft);
+  background: rgba(16, 185, 129, 0.04);
+}
+
+.admin-btn-text {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--amber);
+  text-decoration: underline;
+  margin: 0 !important; /* Force override of .compact-field styles */
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.15s ease;
+}
+
+.admin-btn-text:hover {
+  opacity: 0.8;
+}
+
+

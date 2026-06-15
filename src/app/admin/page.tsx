@@ -90,6 +90,54 @@ export default function AdminPage() {
   // 计算合并后的系统专家
   const systemExperts = useMemo(() => mergeSystemExperts(defaultExperts, systemOverrides), [systemOverrides]);
 
+  // 比对当前系统提示词是否是自定义配置 (与出厂默认配置进行内容深比对)
+  const isPromptsCustomized = useMemo(() => {
+    return JSON.stringify(systemPrompts) !== JSON.stringify(DEFAULT_SYSTEM_PROMPTS);
+  }, [systemPrompts]);
+
+  // 每一项提示词单独检测、指示与重置的 Label 组件
+  const PromptLabelHeader = ({ title, fieldKey, tooltip }: { title: string; fieldKey: keyof SystemPromptsConfig; tooltip?: string }) => {
+    const isCustomized = systemPrompts[fieldKey] !== DEFAULT_SYSTEM_PROMPTS[fieldKey];
+    return (
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", marginBottom: "6px", overflow: "visible" }}>
+        <div style={{ display: "flex", alignItems: "center", minWidth: 0, flex: 1 }}>
+          <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+          {tooltip && <InfoTooltip text={tooltip} />}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0, marginLeft: "12px", whiteSpace: "nowrap" }}>
+          {isCustomized ? (
+            <>
+              <span className="admin-badge-pill is-modified">
+                已修改
+              </span>
+              <button 
+                type="button" 
+                className="admin-btn-text"
+                onClick={() => {
+                  confirm("恢复默认提示词", `确定要将该项提示词恢复为系统出厂默认配置吗？您仍需要点击页面底部的“保存提示词模板”以进行持久化生效。`, () => {
+                    setSystemPrompts(prev => ({
+                      ...prev,
+                      [fieldKey]: DEFAULT_SYSTEM_PROMPTS[fieldKey]
+                    }));
+                    setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+                  });
+                }}
+              >
+                恢复默认
+              </button>
+            </>
+          ) : (
+            <span className="admin-badge-pill is-default">
+              默认
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+
+
   // --- 用户配置管理 ---
   async function handleSaveUserProfile(e: React.FormEvent) {
     e.preventDefault();
@@ -540,73 +588,139 @@ export default function AdminPage() {
           </form>
         </section>
 <section className="panel" style={{ padding: "24px", overflow: "visible" }}>
-          <div style={{ marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
-            <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>系统工作流提示词管理 (System Prompts)</h2>
-            <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>配置各个节点的系统级指令。按照会议流转的生命周期排序。注意不要删改花括号 `{"{ }"}` 内部的变量名。</p>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <h2 style={{ fontSize: "18px", margin: "0" }}>系统工作流提示词管理 (System Prompts)</h2>
+                {isPromptsCustomized ? (
+                  <span style={{ 
+                    fontSize: "11px", 
+                    color: "var(--amber)", 
+                    border: "1px solid var(--amber-soft)", 
+                    background: "rgba(245, 158, 11, 0.06)", 
+                    padding: "2px 6px", 
+                    borderRadius: "4px", 
+                    fontWeight: 600,
+                    letterSpacing: "0.5px"
+                  }}>
+                    已自定义修改
+                  </span>
+                ) : (
+                  <span style={{ 
+                    fontSize: "11px", 
+                    color: "var(--green)", 
+                    border: "1px solid var(--green-soft)", 
+                    background: "rgba(16, 185, 129, 0.06)", 
+                    padding: "2px 6px", 
+                    borderRadius: "4px", 
+                    fontWeight: 600,
+                    letterSpacing: "0.5px"
+                  }}>
+                    出厂默认配置
+                  </span>
+                )}
+              </div>
+              <p style={{ margin: "4px 0 0 0", fontSize: "13px", color: "var(--muted)" }}>配置各个节点的系统级指令。按照会议流转的生命周期排序。注意不要删改花括号 `{"{ }"}` 内部的变量名。</p>
+            </div>
+            <button 
+              type="button" 
+              className="ghost-button" 
+              style={{ 
+                padding: "8px 16px", 
+                fontSize: "13px", 
+                color: "var(--amber)", 
+                borderColor: "var(--amber-soft)", 
+                whiteSpace: "nowrap",
+                fontWeight: 500,
+                transition: "all 0.2s ease"
+              }}
+              onClick={() => {
+                confirm("重置系统工作流提示词", "确定要将所有节点的提示词模板恢复为出厂配置吗？此操作将丢弃您在此模块做出的所有修改（如有）。", async () => {
+                  setSystemPrompts(DEFAULT_SYSTEM_PROMPTS);
+                  await storage.saveSystemPromptsConfig(TENANT_ID, DEFAULT_SYSTEM_PROMPTS);
+                  setConfirmConfig(prev => ({ ...prev, isOpen: false }));
+                  alert("已重置系统提示词为出厂默认配置！");
+                });
+              }}
+            >
+              重置为出厂提示词
+            </button>
           </div>
           <form onSubmit={handleSaveSystemPrompts} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             <div style={{ background: "var(--surface-subtle)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>
               <h3 style={{ fontSize: "14px", margin: 0, color: "var(--ink)" }}>阶段一：专家发言设定</h3>
-              <label className="compact-field">
-                <span>对抗强度 1 (完全顺从与赞同) (包含 `{"{intensity}"}`)</span>
+              <div className="compact-field">
+                <PromptLabelHeader title="对抗强度 1 (完全顺从与赞同)" fieldKey="intensityLevel1" tooltip="可用替换占位符：{intensity} (代表当前的对抗强度数值，如 1)" />
                 <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.intensityLevel1} onChange={e => setSystemPrompts({ ...systemPrompts, intensityLevel1: e.target.value })} />
-              </label>
-              <label className="compact-field">
-                <span>对抗强度 2 (温和协作) (包含 `{"{intensity}"}`)</span>
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader title="对抗强度 2 (温和协作)" fieldKey="intensityLevel2" tooltip="可用替换占位符：{intensity} (代表当前的对抗强度数值，如 2)" />
                 <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.intensityLevel2} onChange={e => setSystemPrompts({ ...systemPrompts, intensityLevel2: e.target.value })} />
-              </label>
-              <label className="compact-field">
-                <span>对抗强度 3 (中立理性) (包含 `{"{intensity}"}`)</span>
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader title="对抗强度 3 (中立理性)" fieldKey="intensityLevel3" tooltip="可用替换占位符：{intensity} (代表当前的对抗强度数值，如 3)" />
                 <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.intensityLevel3} onChange={e => setSystemPrompts({ ...systemPrompts, intensityLevel3: e.target.value })} />
-              </label>
-              <label className="compact-field">
-                <span>对抗强度 4 (激烈批判) (包含 `{"{intensity}"}`)</span>
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader title="对抗强度 4 (激烈批判)" fieldKey="intensityLevel4" tooltip="可用替换占位符：{intensity} (代表当前的对抗强度数值，如 4)" />
                 <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.intensityLevel4} onChange={e => setSystemPrompts({ ...systemPrompts, intensityLevel4: e.target.value })} />
-              </label>
-              <label className="compact-field">
-                <span>对抗强度 5 (毫不留情的开火) (包含 `{"{intensity}"}`)</span>
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader title="对抗强度 5 (毫不留情的开火)" fieldKey="intensityLevel5" tooltip="可用替换占位符：{intensity} (代表当前的对抗强度数值，如 5)" />
                 <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.intensityLevel5} onChange={e => setSystemPrompts({ ...systemPrompts, intensityLevel5: e.target.value })} />
-              </label>
-              <label className="compact-field">
-                <span>专家发言框架格式要求 (包含 `{"{expertName}"}`)</span>
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader 
+                  title="专家发言框架格式要求" 
+                  fieldKey="expertTurnFormat" 
+                  tooltip="本字段是核心的发言模板。支持以下花括号占位符：&#10;• {expertName} - 专家姓名&#10;• {lens} - 专业审视视角&#10;• {temperament} - 专家性格与气质&#10;• {focus} - 本轮关注的重点&#10;• {systemPrompt} - 专家底层的利益立场系统预设&#10;• {intensityPrompt} - 计算出的发言激烈对抗强度要求"
+                />
                 <textarea style={{ minHeight: "120px", fontFamily: "monospace" }} required value={systemPrompts.expertTurnFormat} onChange={e => setSystemPrompts({ ...systemPrompts, expertTurnFormat: e.target.value })} />
-              </label>
-              <label className="compact-field">
-                <span>外部智能体发言提示词模板 (包含 `{"{question}"}`, `{"{context}"}`, `{"{previousTurns}"}`, `{"{expertName}"}`)</span>
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader 
+                  title="外部智能体发言提示词模板" 
+                  fieldKey="externalAgentPrompt" 
+                  tooltip="下发给外部大模型或小龙虾客户端的提示词模板。支持占位符：&#10;• {question} - 圆桌会议当前新议题&#10;• {context} - 项目背景及相关附件内容&#10;• {previousTurns} - 本轮截止目前的其他专家发言记录&#10;• {expertName} - 专家角色姓名"
+                />
                 <textarea style={{ minHeight: "150px", fontFamily: "monospace" }} required value={systemPrompts.externalAgentPrompt || ""} onChange={e => setSystemPrompts({ ...systemPrompts, externalAgentPrompt: e.target.value })} />
-              </label>
+              </div>
             </div>
 
             <div style={{ background: "var(--surface-subtle)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>
               <h3 style={{ fontSize: "14px", margin: 0, color: "var(--ink)" }}>阶段二：智能流转与总结</h3>
-              <label className="compact-field">
-                <span>智能调度官选人指令 (包含 `{"{candidateList}"}`)</span>
+              <div className="compact-field">
+                <PromptLabelHeader title="智能调度官选人指令" fieldKey="nextSpeakerPrompt" tooltip="用于决定下一位发言的内置/外部专家。支持占位符：• {candidateList} - 剩余发言候选人的列表" />
                 <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.nextSpeakerPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, nextSpeakerPrompt: e.target.value })} />
-              </label>
-              <label className="compact-field">
-                <span>主持人提炼纪要指令 (包含 `{"{moderatorName}"}`, `{"{moderatorDesc}"}`)</span>
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader title="主持人提炼纪要指令" fieldKey="synthesisPrompt" tooltip="用于提炼本次讨论的综合共识与最终决策。支持占位符：• {moderatorName} - 主持人名字，• {moderatorDesc} - 主持人风格描述" />
                 <textarea style={{ minHeight: "150px", fontFamily: "monospace" }} required value={systemPrompts.synthesisPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, synthesisPrompt: e.target.value })} />
-              </label>
+              </div>
             </div>
 
             <div style={{ background: "var(--surface-subtle)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>
               <h3 style={{ fontSize: "14px", margin: 0, color: "var(--ink)" }}>阶段三：会议结束</h3>
-              <label className="compact-field">
-                <span>最终结论生成指令</span>
+              <div className="compact-field">
+                <PromptLabelHeader title="最终结论生成指令" fieldKey="finalConclusionPrompt" tooltip="当全部轮次结束后，根据完整的历史记录生成 Markdown 结案陈词。无特定替换占位符" />
                 <textarea style={{ minHeight: "100px", fontFamily: "monospace" }} required value={systemPrompts.finalConclusionPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, finalConclusionPrompt: e.target.value })} />
-              </label>
+              </div>
             </div>
 
             <div style={{ background: "var(--surface-subtle)", padding: "16px", borderRadius: "8px", display: "flex", flexDirection: "column", gap: "12px" }}>
               <h3 style={{ fontSize: "14px", margin: 0, color: "var(--ink)" }}>阶段四：AI 辅助生成配置</h3>
-              <label className="compact-field">
-                <span>会议描述辅助生成指令</span>
+              <div className="compact-field">
+                <PromptLabelHeader title="会议描述辅助生成指令" fieldKey="meetingDescPrompt" tooltip="在会议面板中根据标题一键生成议题描述背景的 System Prompt。无特定替换占位符" />
                 <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.meetingDescPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, meetingDescPrompt: e.target.value })} />
-              </label>
-              <label className="compact-field">
-                <span>专家人设辅助生成指令 (包含 `{"{expertName}"}`, `{"{meetingName}"}`, `{"{meetingDesc}"}`)</span>
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader 
+                  title="专家人设辅助生成指令" 
+                  fieldKey="expertDetailsPrompt" 
+                  tooltip="在后台一键辅助生成专家视角、性格和立场配置的 System Prompt。支持占位符：• {expertName} - 专家名，• {meetingName} - 会议名称，• {meetingDesc} - 会议背景描述"
+                />
                 <textarea style={{ minHeight: "150px", fontFamily: "monospace" }} required value={systemPrompts.expertDetailsPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, expertDetailsPrompt: e.target.value })} />
-              </label>
+              </div>
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>

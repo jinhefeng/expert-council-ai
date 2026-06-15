@@ -228,6 +228,16 @@ export default function Home() {
           setExpertActivationTimestamps(JSON.parse(savedActivations));
         } catch (e) {}
       }
+
+      const savedUnlocked = localStorage.getItem("DC_unlocked_meetings");
+      if (savedUnlocked) {
+        try {
+          const ids = JSON.parse(savedUnlocked) as string[];
+          const dict: Record<string, boolean> = {};
+          ids.forEach(id => { dict[id] = true; });
+          setUnlockedComposers(dict);
+        } catch (e) {}
+      }
       
       setIsLoaded(true);
 
@@ -276,6 +286,14 @@ export default function Home() {
     }
   }, [activeMeetingId]);
 
+  // 保存所有已解锁（解除归档）的会议ID
+  useEffect(() => {
+    if (isLoaded) {
+      const unlockedIds = Object.keys(unlockedComposers).filter(id => unlockedComposers[id]);
+      localStorage.setItem("DC_unlocked_meetings", JSON.stringify(unlockedIds));
+    }
+  }, [unlockedComposers, isLoaded]);
+
   // 计算属性
   const allExperts = useMemo(() => {
     // 过滤出系统专家、全局级专家(!meetingId) 以及当前会议专属专家
@@ -286,6 +304,17 @@ export default function Home() {
   const activeMeeting = useMemo(() => {
     return meetings.find(m => m.id === activeMeetingId);
   }, [meetings, activeMeetingId]);
+
+  const sortedMeetings = useMemo(() => {
+    return [...meetings].sort((a, b) => {
+      const aArchived = !!a.finalConclusion && !unlockedComposers[a.id];
+      const bArchived = !!b.finalConclusion && !unlockedComposers[b.id];
+      if (aArchived !== bArchived) {
+        return aArchived ? 1 : -1;
+      }
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    });
+  }, [meetings, unlockedComposers]);
 
   const activeEngineConfig = useMemo(() => {
     return engineConfigs.find(c => c.id === activeEngineId);
@@ -836,6 +865,7 @@ export default function Home() {
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({
             type: "request_turn",
+            meetingId: meeting.id,
             expertId: expert.id,
             expertName: expert.name,
             question: userQuestion,
@@ -1412,6 +1442,16 @@ export default function Home() {
     const targetMeetingId = activeMeeting.id;
     setGeneratingConclusions(prev => ({ ...prev, [targetMeetingId]: true }));
     
+    // 立即跳转/平滑滚动到页面最底部的“正在生成的控制按钮”处
+    setTimeout(() => {
+      if (chatThreadRef.current) {
+        chatThreadRef.current.scrollTo({
+          top: chatThreadRef.current.scrollHeight,
+          behavior: "smooth"
+        });
+      }
+    }, 60);
+    
     const controller = new AbortController();
     conclusionAbortControllersRef.current[targetMeetingId] = controller;
     const signal = controller.signal;
@@ -1650,16 +1690,22 @@ export default function Home() {
                 </div>
               </div>
               <div className="meeting-list">
-                {meetings.map((meeting) => {
+                {sortedMeetings.map((meeting) => {
                   const isActive = meeting.id === activeMeetingId;
+                  const isArchived = !!meeting.finalConclusion && !unlockedComposers[meeting.id];
                   return (
                     <div
                       key={meeting.id}
-                      className={`meeting-item ${isActive ? "is-active" : ""}`}
+                      className={`meeting-item ${isActive ? "is-active" : ""} ${isArchived ? "is-archived" : ""}`}
                       onClick={() => handleSwitchMeeting(meeting.id)}
                     >
                       <div className="meeting-item-info">
-                        <span className="meeting-item-title">{meeting.name}</span>
+                        <span className="meeting-item-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px", width: "100%" }}>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{meeting.name}</span>
+                          {isArchived && (
+                            <span className="meeting-item-archive-badge" style={{ flexShrink: 0 }}>已归档</span>
+                          )}
+                        </span>
                         <span className="meeting-item-meta">
                           {meeting.messages.length} 轮发言 · {meeting.expertIds.length} 专家
                         </span>
