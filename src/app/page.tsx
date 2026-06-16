@@ -855,11 +855,28 @@ export default function Home() {
 
       return new Promise((resolve, reject) => {
         const turnId = `turn-${Date.now()}`;
+        
+        const onAbort = () => {
+          delete wsResolversRef.current[expert.id];
+          reject(new DOMException("Aborted", "AbortError"));
+        };
+
+        if (signal.aborted) {
+          return onAbort();
+        }
+        signal.addEventListener("abort", onAbort);
+
         wsResolversRef.current[expert.id] = {
           text: "",
           onChunk,
-          resolve,
-          reject
+          resolve: (val) => {
+            signal.removeEventListener("abort", onAbort);
+            resolve(val);
+          },
+          reject: (err) => {
+            signal.removeEventListener("abort", onAbort);
+            reject(err);
+          }
         };
 
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -875,6 +892,7 @@ export default function Home() {
             turnId
           }));
         } else {
+          signal.removeEventListener("abort", onAbort);
           delete wsResolversRef.current[expert.id];
           reject(new Error("本地中继网关已断开连接，无法请求外部智能体。"));
         }
@@ -1029,6 +1047,15 @@ export default function Home() {
     if (activeMeetingId && discussAbortControllersRef.current[activeMeetingId]) {
       discussAbortControllersRef.current[activeMeetingId].abort();
       delete discussAbortControllersRef.current[activeMeetingId];
+
+      // 同步叫停并注销所有悬空等待中的外部智能体 Promise，防范控制台未捕获拒绝错误
+      Object.keys(wsResolversRef.current).forEach((expertId) => {
+        const resolver = wsResolversRef.current[expertId];
+        if (resolver) {
+          resolver.reject(new DOMException("Aborted", "AbortError"));
+          delete wsResolversRef.current[expertId];
+        }
+      });
     }
   }
 
@@ -1644,6 +1671,9 @@ export default function Home() {
             <span className="status-chip">
               {activeEngineId === "system-env" ? "系统环境模型" : activeEngineConfig?.name || "未知引擎"}
             </span>
+            <a href="/manual.html" target="_blank" className="ghost-button" style={{ display: "inline-flex", alignItems: "center", minHeight: "30px", padding: "0 12px", textDecoration: "none", borderRadius: "999px", fontSize: "12px", border: "1px solid var(--line)", background: "var(--surface)", marginRight: "8px" }}>
+              💡 使用说明
+            </a>
             <a href="/admin" className="ghost-button" style={{ display: "inline-flex", alignItems: "center", minHeight: "30px", padding: "0 12px", textDecoration: "none", borderRadius: "999px", fontSize: "12px", border: "1px solid var(--line)", background: "var(--surface)" }}>
               后台管理 →
             </a>

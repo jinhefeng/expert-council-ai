@@ -425,3 +425,11 @@ None
 2026-06-15 17:53:26 | INFO | summarizer.py:96 | execute | Summarizer Result:
 None
 2026-06-15 17:53:26 | INFO | base_op.py:287 | Summarizer.call | ========== cost=742.735253s ==========
+2026-06-15 23:01:21 | INFO | full_file_watcher.py:66 | _on_changes | delete_file /Users/jinhefeng/.copaw/workspaces/wei/MEMORY.md
+2026-06-15 23:01:21 | INFO | full_file_watcher.py:69 | _on_changes | Upserted 1 chunks for /Users/jinhefeng/.copaw/workspaces/wei/MEMORY.md
+2026-06-15 23:01:21 | INFO | full_file_watcher.py:78 | _on_changes | File 2 changed: /Users/jinhefeng/.copaw/workspaces/wei/MEMORY.md
+2026-06-15 23:01:21 | INFO | base_file_watcher.py:223 | on_changes | [FullFileWatcher] on_changes: {(<Change.modified: 2>, '/Users/jinhefeng/.copaw/workspaces/wei/MEMORY.md')}
+2026-06-15 23:01:59 | INFO | full_file_watcher.py:66 | _on_changes | delete_file /Users/jinhefeng/.copaw/workspaces/default/MEMORY.md
+2026-06-15 23:01:59 | INFO | full_file_watcher.py:69 | _on_changes | Upserted 2 chunks for /Users/jinhefeng/.copaw/workspaces/default/MEMORY.md
+2026-06-15 23:01:59 | INFO | full_file_watcher.py:78 | _on_changes | File 2 changed: /Users/jinhefeng/.copaw/workspaces/default/MEMORY.md
+2026-06-15 23:01:59 | INFO | base_file_watcher.py:223 | on_changes | [FullFileWatcher] on_changes: {(<Change.modified: 2>, '/Users/jinhefeng/.copaw/workspaces/default/MEMORY.md')}

@@ -293,10 +293,13 @@ export async function getExpertTurn({
     ...historyMessages,
   ];
 
-  // 拼接当前这一轮的最新 User 问题以及本轮内先于此专家发言的其他专家的观点
   const currentTurnPreviousText = previousTurns.length
     ? "本轮专家讨论中，此前已发言记录：\n" +
-      previousTurns.map((turn) => `【${turn.expertName}】：${(turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim()}`).join("\n\n")
+      previousTurns.map((turn) => {
+        const cleaned = (turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+        const blockquote = cleaned.split("\n").map(line => `> ${line}`).join("\n");
+        return `【${turn.expertName}】发言：\n${blockquote}`;
+      }).join("\n\n")
     : "本轮中你是第一个发言的专家。";
 
   const currentUserTurnText = [
@@ -367,7 +370,11 @@ export async function getExpertTurnStream({
 
   const currentTurnPreviousText = previousTurns.length
     ? "本轮专家讨论中，此前已发言记录：\n" +
-      previousTurns.map((turn) => `【${turn.expertName}】：${(turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim()}`).join("\n\n")
+      previousTurns.map((turn) => {
+        const cleaned = (turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+        const blockquote = cleaned.split("\n").map(line => `> ${line}`).join("\n");
+        return `【${turn.expertName}】发言：\n${blockquote}`;
+      }).join("\n\n")
     : "本轮中你是第一个发言的专家。";
 
   const currentUserTurnText = [
@@ -522,7 +529,11 @@ export async function getNextSpeaker({
   const currentUserTurnText = [
     `当前新议题：${question}`,
     "本轮讨论已有发言历史：",
-    ...previousTurns.map((turn) => `【${turn.expertName}】：${turn.content}`),
+    ...previousTurns.map((turn) => {
+      const cleaned = (turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      const blockquote = cleaned.split("\n").map(line => `> ${line}`).join("\n");
+      return `【${turn.expertName}】发言：\n${blockquote}`;
+    }),
     "根据以上记录，请返回下一个最契合的候选专家 ID："
   ].join("\n\n");
 

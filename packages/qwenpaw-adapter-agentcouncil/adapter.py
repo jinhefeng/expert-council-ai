@@ -251,7 +251,17 @@ class DesignCouncilQwenPawAdapter:
             f"此前会议发言：\n"
         )
         for t in previous_turns:
-            prompt += f"【{t.get('expertName')}】：{t.get('content')}\n"
+            content = t.get('content') or ""
+            # 清洗 think
+            content = re.sub(r'<think>[\s\S]*?<\/think>', '', content)
+            think_idx = content.find("<think>")
+            if think_idx != -1:
+                content = content[:think_idx]
+            
+            lines = content.strip().split('\n')
+            formatted_lines = [f"> {line}" for line in lines]
+            blockquote = '\n'.join(formatted_lines)
+            prompt += f"【{t.get('expertName')}】发言：\n{blockquote}\n\n"
 
         prompt += "\n请对该方案进行评审，并用中文给出修改意见。在发言末尾，必须输出如下结构化 JSON 摘要：\n"
         prompt += '```json\n{\n  "stance": "您的核心立场",\n  "concern": "最担忧的风险",\n  "recommendation": "可落地建议",\n  "tradeoff": "为了做这个决策需要付出的牺牲/妥协"\n}\n```'

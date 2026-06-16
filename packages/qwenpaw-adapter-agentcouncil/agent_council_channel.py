@@ -213,7 +213,11 @@ class AgentCouncilChannel(BaseChannel):
             if "<think>" in content:
                 idx = content.find("<think>")
                 content = content[:idx]
-            previous_turns_text += f"【{t.get('expertName')}】：{content.strip()}\n"
+            
+            lines = content.strip().split('\n')
+            formatted_lines = [f"> {line}" for line in lines]
+            blockquote = '\n'.join(formatted_lines)
+            previous_turns_text += f"【{t.get('expertName')}】发言：\n{blockquote}\n\n"
         
         if not previous_turns_text:
             previous_turns_text = "本轮中你是第一个发言的专家。"
