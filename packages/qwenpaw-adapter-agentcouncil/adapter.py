@@ -241,11 +241,14 @@ class DesignCouncilQwenPawAdapter:
         question = data.get("question")
         context = data.get("context", "")
         previous_turns = data.get("previousTurns", [])
+        expert_name = data.get("expertName", "未知专家")
+        expert_title = data.get("expertTitle", "未知头衔")
 
         print(f"[QwenPaw-Adapter] 收到发言令牌. 会议ID: {data.get('meetingId')}, 轮次ID: {turn_id}")
 
         # 拼接提供给模型的消息
         prompt = (
+            f"你当前在会议中扮演的角色是【{expert_name}】，核心头衔是【{expert_title}】。\n"
             f"当前评审议题：{question}\n"
             f"项目背景：{context}\n"
             f"此前会议发言：\n"

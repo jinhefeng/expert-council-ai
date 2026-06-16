@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
+import { initWSRelayServer } from "@/lib/ws-relay-server";
 
 export async function GET(request: Request) {
   try {
+    // 确保在 API 请求到来时网关能够自动拉起启动并监听端口
+    initWSRelayServer();
+
     const { searchParams } = new URL(request.url);
     const token = searchParams.get("token")?.trim();
 

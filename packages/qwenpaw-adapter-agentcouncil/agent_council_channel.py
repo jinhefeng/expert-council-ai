@@ -202,7 +202,10 @@ class AgentCouncilChannel(BaseChannel):
         turn_id = data.get("turnId")
         meeting_id = data.get("meetingId", "default-meeting")
         expert_name = data.get("expertName") or "未知专家"
+        expert_title = data.get("expertTitle") or "未知头衔"
         external_prompt_tpl = data.get("externalAgentPrompt")
+        user_title = data.get("userTitle") or "首席决策官"
+        user_name = data.get("userName") or "主持人"
 
         # 整理以往会议发言拼接文本
         previous_turns_text = ""
@@ -231,10 +234,14 @@ class AgentCouncilChannel(BaseChannel):
             prompt = prompt.replace("{context}", context)
             prompt = prompt.replace("{previousTurns}", previous_turns_text)
             prompt = prompt.replace("{expertName}", expert_name)
+            prompt = prompt.replace("{expertTitle}", expert_title)
+            prompt = prompt.replace("{userTitle}", user_title)
+            prompt = prompt.replace("{userName}", user_name)
         else:
             # 平滑降级至默认硬编码拼接格式
             prompt = (
-                f"当前评审议题：{question}\n"
+                f"你当前在会议中扮演的角色是【{expert_name}】，核心头衔是【{expert_title}】。\n"
+                f"当前来自人类决策者（{user_title} {user_name}）的现场干预与最新指令：\n{question}\n"
                 f"项目背景：{context}\n"
                 f"此前会议发言：\n{previous_turns_text}\n"
             )
@@ -252,7 +259,7 @@ class AgentCouncilChannel(BaseChannel):
                 "```"
             )
 
-        # 封装为规范的 AgentRequest 传入引擎，对齐 QwenPaw 联合主键会话机制
+        # 封装为规范 of AgentRequest 传入引擎，对齐 QwenPaw 联合主键会话机制
         from agentscope_runtime.engine.schemas.agent_schemas import TextContent, ContentType
         content_parts = [TextContent(type=ContentType.TEXT, text=prompt)]
         agent_request = self.build_agent_request_from_user_content(

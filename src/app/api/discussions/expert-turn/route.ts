@@ -13,6 +13,7 @@ export async function POST(request: Request) {
       conversationHistory,
       llmParams,
       systemPrompts,
+      userProfile,
     } = body;
 
     if (!question || !expert) {
@@ -30,6 +31,7 @@ export async function POST(request: Request) {
         conversationHistory,
         llmParams,
         systemPrompts,
+        userProfile,
       });
       return responseStream;
     } else {
@@ -43,6 +45,7 @@ export async function POST(request: Request) {
         conversationHistory,
         llmParams,
         systemPrompts,
+        userProfile,
       });
 
       return Response.json(result);

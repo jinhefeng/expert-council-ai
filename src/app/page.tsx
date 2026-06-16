@@ -332,8 +332,19 @@ export default function Home() {
 
     function connect() {
       if (typeof window === "undefined") return;
-      console.log("[WS-Frontend] Connecting to relay server at ws://localhost:18788/frontend ...");
-      socket = new WebSocket("ws://localhost:18788/frontend");
+      const isSecure = window.location.protocol === "https:";
+      const protocol = isSecure ? "wss:" : "ws:";
+      const host = window.location.host;
+      
+      let wsUrl = "";
+      if (host.includes("localhost") || host.includes("127.0.0.1")) {
+        wsUrl = `${protocol}//${window.location.hostname}:18788/frontend`;
+      } else {
+        wsUrl = `${protocol}//${host}/frontend`;
+      }
+      
+      console.log(`[WS-Frontend] Connecting to relay server at ${wsUrl} ...`);
+      socket = new WebSocket(wsUrl);
 
       socket.onopen = () => {
         console.log("[WS-Frontend] Connected to relay server");
@@ -841,7 +852,7 @@ export default function Home() {
   async function requestExpertTurn(
     meeting: Meeting,
     expert: Expert,
-    previousTurns: { expertName: string; content: string }[],
+    previousTurns: { expertName: string; expertTitle?: string; content: string }[],
     userQuestion: string,
     contextStr: string,
     history: ChatMessage[],
@@ -885,10 +896,13 @@ export default function Home() {
             meetingId: meeting.id,
             expertId: expert.id,
             expertName: expert.name,
+            expertTitle: expert.title,
             question: userQuestion,
             context: contextStr,
             previousTurns,
             externalAgentPrompt: systemPrompts?.externalAgentPrompt || "",
+            userTitle: userProfile.title,
+            userName: userProfile.name,
             turnId
           }));
         } else {
@@ -912,6 +926,7 @@ export default function Home() {
         conversationHistory: history,
         llmParams,
         systemPrompts,
+        userProfile,
       }),
       signal,
     });
@@ -981,7 +996,7 @@ export default function Home() {
   // 智能相关度下一发言人决策
   async function requestNextSpeakerId(
     userQuestion: string,
-    previousTurns: { expertName: string; content: string }[],
+    previousTurns: { expertName: string; expertTitle?: string; content: string }[],
     candidateExperts: Expert[],
     history: ChatMessage[],
     signal: AbortSignal
@@ -1013,7 +1028,7 @@ export default function Home() {
   async function requestSynthesis(
     meeting: Meeting,
     userQuestion: string,
-    expertRounds: { expertName: string; content: string }[],
+    expertRounds: { expertName: string; expertTitle?: string; content: string }[],
     contextStr: string,
     history: ChatMessage[],
     signal: AbortSignal
@@ -1030,6 +1045,7 @@ export default function Home() {
         conversationHistory: history,
         llmParams,
         systemPrompts,
+        userProfile,
       }),
       signal,
     });
@@ -1128,7 +1144,7 @@ export default function Home() {
     const contextStr = [meetingContextStr, projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
     // 本轮发言缓冲
-    const previousTurns: { expertName: string; content: string }[] = [];
+    const previousTurns: { expertName: string; expertTitle?: string; content: string }[] = [];
     let currentMeeting = nextMeetingState;
 
     try {
@@ -1142,7 +1158,7 @@ export default function Home() {
           meetingId: targetMeetingId,
           tenantId: TENANT_ID,
           role: "moderator",
-          senderName: "主持人",
+          senderName: systemPrompts?.moderatorName || "主持人",
           content: synth.summary,
           expertStance: {
             stance: "共识：" + (synth.consensus?.join("；") || "无。"),
@@ -1249,6 +1265,7 @@ export default function Home() {
 
         previousTurns.push({
           expertName: currentExpert.name,
+          expertTitle: currentExpert.title,
           content: turnResult.content,
         });
       }
@@ -1264,7 +1281,7 @@ export default function Home() {
         meetingId: currentMeeting.id,
         tenantId: TENANT_ID,
         role: "moderator",
-        senderName: "主持人",
+        senderName: systemPrompts?.moderatorName || "主持人",
         content: synth.summary,
         expertStance: {
           stance: "共识：" + (synth.consensus?.join("；") || "达成基本共识。"),

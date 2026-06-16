@@ -28,7 +28,7 @@
 ## 3. 协议变更定义 (Protocol Specifications)
 
 ### 3.1 前后端 WebSocket 协议 (`request_turn`)
-前端在触发外部专家发言向中继网关请求时，不再传递该专家的个体 systemPrompt，而是从系统已加载的全局配置中，将自定义的外部提示词模板 `externalAgentPrompt` 包含在 JSON 载荷中：
+前端在触发外部专家发言向中继网关请求时，不再传递该专家的个体 systemPrompt，而是从系统已加载的全局配置中，将自定义的外部提示词模板 `externalAgentPrompt` 包含在 JSON 载荷中，同时带上当前人类决策者的身份信息：
 
 ```json
 {
@@ -39,16 +39,18 @@
   "context": "项目背景...",
   "previousTurns": [...],
   "externalAgentPrompt": "当前会议新议题：{question}...", // 新增属性：全局外部提示词模板
+  "userTitle": "需求提出人", // 新增属性
+  "userName": "产品经理", // 新增属性
   "turnId": "turn-12345"
 }
 ```
 
-### 3.2 外部 OpenClaw 协议 (`turn.active`)
-网关在向外部 OpenClaw 智能体推送发言令牌时，在 `data` 对象中追加 `externalAgentPrompt` 属性进行透传，并仅携带增量的 `previousTurns`，由小龙虾客户端插件根据自身设计自行选择解析或做变量替换：
+### 3.2 外部 OpenClaw 协议 (`turn.active` / CLP `turn.request`)
+网关在向外部智能体推送发言令牌时，在 `data` 对象中追加 `externalAgentPrompt` 属性进行透传，并携带增量的 `previousTurns`，同时补充人类决策者的身份信息：
 
 ```json
 {
-  "event": "turn.active",
+  "event": "turn.request",
   "data": {
     "meetingId": "meet-001",
     "turnId": "turn-12345",
@@ -56,7 +58,9 @@
     "context": "项目背景...",
     "previousTurns": [...], // 仅包含增量的历史发言
     "isIncremental": true,
-    "externalAgentPrompt": "当前会议新议题：{question}..." // 新增属性
+    "externalAgentPrompt": "当前会议新议题：{question}...", // 新增属性
+    "userTitle": "需求提出人", // 新增属性
+    "userName": "产品经理" // 新增属性
   }
 }
 ```
@@ -76,10 +80,12 @@
      - `\{context\}` ➔ 背景与附件文本 `payload.context` (若为空则替换为 `"无"`)
      - `\{previousTurns\}` ➔ 格式化后的此前轮次发言历史记录
      - `\{expertName\}` ➔ 当前发言专家名称 `expertName`
+     - `\{userTitle\}` ➔ 人类决策者头衔 `payload.userTitle`
+     - `\{userName\}` ➔ 人类决策者姓名 `payload.userName`
    - 替换后的内容作为最终 `message` 字段通过 OneBot 协议发送给外部智能体客户端。
 
-### 4.2 OpenClaw 协议的传输
-- 网关仅在 `clawEvent.data` 中追加 `externalAgentPrompt` 属性并原样透传。不进行网关侧的变量替换，给予外部插件最大的解析自由度。
+### 4.2 OpenClaw/CLP 协议的传输
+- 网关仅在 `clawEvent.data` 中追加 `externalAgentPrompt`、`userTitle`、`userName` 属性并原样透传。不进行网关侧的变量替换，由外部插件在客户端解析时执行相应替换，给予外部插件最大的解析自由度。
 
 ---
 

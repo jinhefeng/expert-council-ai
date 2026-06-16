@@ -221,10 +221,72 @@ graph TD
      ws://192.168.1.100:18788/bot
      ```
      *⚠️ 注意：请确保平台所在服务器的防火墙已放行 `18788` 端口，且两端机器网络互通。*
-   - **云端公网生产部署 (Production Cloud)**：若平台部署在公网云服务器上，为了防止鉴权 Token 和通信内容在公网明文传输被窃听，**强烈建议配置域名并使用 Nginx 进行 SSL 反向代理**，使用加密的 `wss` 协议连接。例如：
-     ```text
-     wss://your-domain.com/bot
-     ```
+   - **云端公网生产部署 (Production Cloud)**：若平台部署在公网云服务器上，为了防止鉴权 Token 和通信内容在公网明文传输被窃听，**强烈建议配置域名并使用反向代理（如 Nginx 或 Caddy）进行 SSL 代理**，使用加密的 `wss` 协议连接（例如 `wss://cc.heatingos.com/bot`）。在此模式下，外部客户端可以直接通过标准的 `443` (HTTPS) 端口与网关建立连接，免去了在公网防火墙中暴露 `18788` 非标端口的安全隐患。具体反向代理配置示例如下：
+
+#### 💡 生产环境反向代理配置示例
+
+##### ① Caddy 配置示例（极简，开箱即用支持自动 SSL 证书）
+如果您使用的是 **Caddy** 作为 Web 服务器，需要在域名配置块中同时添加对 `/bot`（外部智能体连接）和 `/frontend`（前端实时状态监听）路径的 `reverse_proxy` 路由。Caddy 会自动处理 WebSocket 协议升级：
+```caddyfile
+cc.heatingos.com {
+    # 1. 代理外部智能体 WebSocket 流量
+    reverse_proxy /bot 127.0.0.1:18788
+
+    # 2. 代理前端实时状态监听 WebSocket 流量（保障首页“在线/离线”状态实时刷新）
+    reverse_proxy /frontend 127.0.0.1:18788
+
+    # 3. 代理网页端主体服务到本地 3000 端口
+    reverse_proxy 127.0.0.1:3000
+}
+```
+*（配置完成后，外部智能体客户端侧的连接地址填写为：`wss://cc.heatingos.com/bot`。不需要指定 `:18788`，Caddy 会在 443 端口自动匹配并转发。）*
+
+##### ② Nginx 配置示例
+如果您使用的是 **Nginx** 作为 Web 服务器，需要手动配置协议升级头部以支持 WebSocket 长连接：
+```nginx
+server {
+    listen 443 ssl;
+    server_name cc.heatingos.com;
+
+    ssl_certificate /path/to/ssl_certificate.crt;
+    ssl_certificate_key /path/to/ssl_certificate.key;
+
+    # 代理主体网页服务到 3000 端口
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # 1. 代理外部智能体 WebSocket 流量
+    location /bot {
+        proxy_pass http://127.0.0.1:18788;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # 2. 代理前端实时状态监听 WebSocket 流量
+    location /frontend {
+        proxy_pass http://127.0.0.1:18788;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+*（配置完成后，外部客户端连接地址同样写为：`wss://cc.heatingos.com/bot`。）*
 
 3. **测试连通性**：
    - 启动您本地/服务器上的外部智能体程序。

@@ -12,6 +12,8 @@ declare global {
   var originalWarn: (...args: any[]) => void;
 }
 
+let createServerInstance: (() => any) | null = null;
+
 // Ensure this only runs on the Node.js server side
 if (typeof window === "undefined") {
   // Dynamic import of 'ws' to avoid Webpack issues in the browser build
@@ -367,9 +369,12 @@ if (typeof window === "undefined") {
           question: payload.question,
           context: payload.context,
           expertName: payload.expertName || "未知专家",
+          expertTitle: payload.expertTitle || "未知头衔",
           previousTurns: previousTurns,
           isIncremental,
-          externalAgentPrompt: payload.externalAgentPrompt || ""
+          externalAgentPrompt: payload.externalAgentPrompt || "",
+          userTitle: payload.userTitle || "首席决策官",
+          userName: payload.userName || "主持人"
         }
       };
 
@@ -408,11 +413,28 @@ if (typeof window === "undefined") {
     }
   }
 
-  // Next.js 热重载时：仅仅实例化 WSRelayServer。新实例构造函数中会去覆盖全局 WSS 事件与接管物理套接字连接
-  global.wsRelayServer = new WSRelayServer();
+  // 闭包函数，用于实例化局部作用域内的 WSRelayServer 类
+  createServerInstance = () => {
+    if (!global.wsRelayServer) {
+      global.wsRelayServer = new WSRelayServer();
+    }
+    return global.wsRelayServer;
+  };
 }
-
+ 
 export function initWSRelayServer() {
-  // Triggered test comment for HMR handover validation
-  return global.wsRelayServer;
+  // 1. 如果处于 Next.js 静态打包构建、页面生成或 Edge 边缘运行环境，跳过实例化
+  if (
+    process.env.NEXT_PHASE === "phase-production-build" ||
+    process.env.IS_NEXT_BUILD === "true" ||
+    process.env.NEXT_RUNTIME === "edge"
+  ) {
+    return null;
+  }
+ 
+  // 2. 在服务端真正运行且有实际需要时进行惰性单例初始化
+  if (createServerInstance) {
+    return createServerInstance();
+  }
+  return null;
 }

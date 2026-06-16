@@ -232,6 +232,22 @@ function getIntensityPrompt(personal: number, global: number, prompts: SystemPro
   }
 }
 
+// 格式化本轮此前专家发言（通用辅助函数）
+function formatPreviousTurns(
+  previousTurns: { expertName: string; expertTitle?: string; content: string }[],
+  headerPrompt: string,
+  emptyPrompt: string,
+): string {
+  if (!previousTurns.length) return emptyPrompt;
+  const formatted = previousTurns.map((turn) => {
+    const cleaned = (turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    const blockquote = cleaned.split("\n").map(line => `> ${line}`).join("\n");
+    const title = turn.expertTitle ? ` (${turn.expertTitle})` : "";
+    return `【${turn.expertName}${title}】发言：\n${blockquote}`;
+  }).join("\n\n");
+  return `${headerPrompt}\n${formatted}`;
+}
+
 // 1. 生成单步专家发言
 export async function getExpertTurn({
   question,
@@ -243,16 +259,18 @@ export async function getExpertTurn({
   conversationHistory = [],
   llmParams,
   systemPrompts,
+  userProfile,
 }: {
   question: string;
   projectContext?: string;
   expert: Expert;
-  previousTurns: { expertName: string; content: string }[];
+  previousTurns: { expertName: string; expertTitle?: string; content: string }[];
   globalDebateIntensity?: number;
   engineConfig?: LLMEngineConfig;
   conversationHistory?: ChatMessage[];
   llmParams: LLMParamsConfig;
   systemPrompts: SystemPromptsConfig;
+  userProfile?: { name: string; title: string };
 }): Promise<{
   content: string;
   expertStance: {
@@ -262,7 +280,6 @@ export async function getExpertTurn({
     tradeoff: string;
   };
 }> {
-  // 决定引擎：优先使用传入的，否则尝试加载系统默认引擎
   const activeEngine = engineConfig || getSystemEngine();
 
   if (!activeEngine) {
@@ -271,21 +288,23 @@ export async function getExpertTurn({
     );
   }
 
-  // 拼接大模型 System Prompt
   const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity, systemPrompts);
   const focusStr = Array.isArray(expert.focus) ? expert.focus.join("、") : (expert.focus || "无特定焦点");
+  
+  const userTitle = userProfile?.title || "首席决策官";
+  const userName = userProfile?.name || "主持人";
 
   const systemPrompt = (systemPrompts?.expertTurnFormat ?? "")
     .replace(/{expertName}/g, expert.name || "")
+    .replace(/{expertTitle}/g, expert.title || "")
     .replace(/{lens}/g, expert.lens || "全局评估")
     .replace(/{temperament}/g, expert.temperament || "中立冷静")
     .replace(/{focus}/g, focusStr)
     .replace(/{systemPrompt}/g, expert.systemPrompt || "")
-    .replace(/{intensityPrompt}/g, intensityPrompt);
+    .replace(/{intensityPrompt}/g, intensityPrompt)
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName);
 
-
-
-  // 格式化以往所有轮次的会议聊天记录作为对话历史上下文
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
 
   const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
@@ -293,21 +312,20 @@ export async function getExpertTurn({
     ...historyMessages,
   ];
 
-  const currentTurnPreviousText = previousTurns.length
-    ? "本轮专家讨论中，此前已发言记录：\n" +
-      previousTurns.map((turn) => {
-        const cleaned = (turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-        const blockquote = cleaned.split("\n").map(line => `> ${line}`).join("\n");
-        return `【${turn.expertName}】发言：\n${blockquote}`;
-      }).join("\n\n")
-    : "本轮中你是第一个发言的专家。";
+  const currentTurnPreviousText = formatPreviousTurns(
+    previousTurns,
+    systemPrompts.prevTurnsHeaderPrompt ?? "本轮专家讨论中，此前已发言记录：",
+    systemPrompts.prevTurnsEmptyPrompt ?? "本轮中你是第一个发言的专家。",
+  );
 
-  const currentUserTurnText = [
-    `当前会议新议题：${question}`,
-    projectContext ? `项目背景及附件信息：\n${projectContext}` : "",
-    currentTurnPreviousText,
-    `请针对当前议题表达你的专业视角发言：`
-  ].filter(Boolean).join("\n\n");
+  const contextText = projectContext ? `项目背景及附件信息：\n${projectContext}` : "";
+
+  const currentUserTurnText = (systemPrompts.expertUserPromptFormat ?? "【来自人类决策者（{userTitle} {userName}）的现场干预与最新指令】：\n{question}\n\n{context}\n\n{previousTurns}\n\n请针对人类决策者的指令表达你的专业视角发言：")
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName)
+    .replace(/{question}/g, question)
+    .replace(/{context}/g, contextText)
+    .replace(/{previousTurns}/g, currentTurnPreviousText);
 
   promptMessages.push({ role: "user", content: currentUserTurnText });
 
@@ -331,16 +349,18 @@ export async function getExpertTurnStream({
   conversationHistory = [],
   llmParams,
   systemPrompts,
+  userProfile,
 }: {
   question: string;
   projectContext?: string;
   expert: Expert;
-  previousTurns: { expertName: string; content: string }[];
+  previousTurns: { expertName: string; expertTitle?: string; content: string }[];
   globalDebateIntensity?: number;
   engineConfig?: LLMEngineConfig;
   conversationHistory?: ChatMessage[];
   llmParams: LLMParamsConfig;
   systemPrompts: SystemPromptsConfig;
+  userProfile?: { name: string; title: string };
 }): Promise<Response> {
   const activeEngine = engineConfig || getSystemEngine();
 
@@ -353,13 +373,19 @@ export async function getExpertTurnStream({
   const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity, systemPrompts);
   const focusStr = Array.isArray(expert.focus) ? expert.focus.join("、") : (expert.focus || "无特定焦点");
 
+  const userTitle = userProfile?.title || "首席决策官";
+  const userName = userProfile?.name || "主持人";
+
   const systemPrompt = (systemPrompts?.expertTurnFormat ?? "")
     .replace(/{expertName}/g, expert.name || "")
+    .replace(/{expertTitle}/g, expert.title || "")
     .replace(/{lens}/g, expert.lens || "全局评估")
     .replace(/{temperament}/g, expert.temperament || "中立冷静")
     .replace(/{focus}/g, focusStr)
     .replace(/{systemPrompt}/g, expert.systemPrompt || "")
-    .replace(/{intensityPrompt}/g, intensityPrompt);
+    .replace(/{intensityPrompt}/g, intensityPrompt)
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName);
 
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
 
@@ -368,21 +394,20 @@ export async function getExpertTurnStream({
     ...historyMessages,
   ];
 
-  const currentTurnPreviousText = previousTurns.length
-    ? "本轮专家讨论中，此前已发言记录：\n" +
-      previousTurns.map((turn) => {
-        const cleaned = (turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-        const blockquote = cleaned.split("\n").map(line => `> ${line}`).join("\n");
-        return `【${turn.expertName}】发言：\n${blockquote}`;
-      }).join("\n\n")
-    : "本轮中你是第一个发言的专家。";
+  const currentTurnPreviousText = formatPreviousTurns(
+    previousTurns,
+    systemPrompts.prevTurnsHeaderPrompt ?? "本轮专家讨论中，此前已发言记录：",
+    systemPrompts.prevTurnsEmptyPrompt ?? "本轮中你是第一个发言的专家。",
+  );
 
-  const currentUserTurnText = [
-    `当前会议新议题：${question}`,
-    projectContext ? `项目背景及附件信息：\n${projectContext}` : "",
-    currentTurnPreviousText,
-    `请针对当前议题表达你的专业视角发言：`
-  ].filter(Boolean).join("\n\n");
+  const contextText = projectContext ? `项目背景及附件信息：\n${projectContext}` : "";
+
+  const currentUserTurnText = (systemPrompts.expertUserPromptFormat ?? "【来自人类决策者（{userTitle} {userName}）的现场干预与最新指令】：\n{question}\n\n{context}\n\n{previousTurns}\n\n请针对人类决策者的指令表达你的专业视角发言：")
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName)
+    .replace(/{question}/g, question)
+    .replace(/{context}/g, contextText)
+    .replace(/{previousTurns}/g, currentTurnPreviousText);
 
   promptMessages.push({ role: "user", content: currentUserTurnText });
 
@@ -404,6 +429,7 @@ export async function getSynthesis({
   conversationHistory = [],
   llmParams,
   systemPrompts,
+  userProfile,
 }: {
   question: string;
   projectContext?: string;
@@ -413,6 +439,7 @@ export async function getSynthesis({
   conversationHistory?: ChatMessage[];
   llmParams: LLMParamsConfig;
   systemPrompts: SystemPromptsConfig;
+  userProfile?: { name: string; title: string };
 }): Promise<{
   summary: string;
   consensus: string[];
@@ -429,9 +456,13 @@ export async function getSynthesis({
     );
   }
 
+  const moderatorName = systemPrompts.moderatorName || moderator.name;
+  const moderatorTitle = systemPrompts.moderatorTitle || "决策协调官";
+
   const systemPrompt = (systemPrompts?.synthesisPrompt ?? "")
-    .replace("{moderatorName}", moderator.name)
-    .replace("{moderatorDesc}", moderator.description);
+    .replace("{moderatorName}", moderatorName)
+    .replace("{moderatorDesc}", moderator.description)
+    .replace(/{moderatorTitle}/g, moderatorTitle);
 
   // 格式化历史消息
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
@@ -441,13 +472,17 @@ export async function getSynthesis({
     ...historyMessages,
   ];
 
-  const currentUserTurnText = [
-    `当前会议议题：${question}`,
-    projectContext ? `项目背景：\n${projectContext}` : "",
-    "本轮参会专家发言记录：",
-    ...expertRounds.map((round) => `【${round.expertName}】：${round.content}`),
-    "请对以上圆桌会议内容进行主持人综合总结。"
-  ].join("\n\n");
+  const expertTurnsText = expertRounds.map((round) => `【${round.expertName}】：${round.content}`).join("\n\n");
+  const contextText = projectContext ? `项目背景：\n${projectContext}` : "";
+  const userTitle = userProfile?.title || "首席决策官";
+  const userName = userProfile?.name || "主持人";
+
+  const currentUserTurnText = (systemPrompts.synthesisUserPromptFormat ?? "当前会议议题：{question}\n\n{context}\n\n本轮参会专家发言记录：\n{expertTurns}\n\n请对以上圆桌会议内容进行主持人综合总结。")
+    .replace(/{question}/g, question)
+    .replace(/{context}/g, contextText)
+    .replace(/{expertTurns}/g, expertTurnsText)
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName);
 
   promptMessages.push({ role: "user", content: currentUserTurnText });
 
@@ -490,7 +525,7 @@ export async function getNextSpeaker({
   systemPrompts,
 }: {
   question: string;
-  previousTurns: { expertName: string; content: string }[];
+  previousTurns: { expertName: string; expertTitle?: string; content: string }[];
   candidateExperts: Expert[];
   engineConfig?: LLMEngineConfig;
   conversationHistory?: ChatMessage[];
@@ -526,16 +561,15 @@ export async function getNextSpeaker({
     ...historyMessages,
   ];
 
-  const currentUserTurnText = [
-    `当前新议题：${question}`,
-    "本轮讨论已有发言历史：",
-    ...previousTurns.map((turn) => {
-      const cleaned = (turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-      const blockquote = cleaned.split("\n").map(line => `> ${line}`).join("\n");
-      return `【${turn.expertName}】发言：\n${blockquote}`;
-    }),
-    "根据以上记录，请返回下一个最契合的候选专家 ID："
-  ].join("\n\n");
+  const previousTurnsText = formatPreviousTurns(
+    previousTurns,
+    systemPrompts.prevTurnsHeaderPrompt ?? "本轮专家讨论中，此前已发言记录：",
+    systemPrompts.prevTurnsEmptyPrompt ?? "本轮中你是第一个发言的专家。",
+  );
+
+  const currentUserTurnText = (systemPrompts.nextSpeakerUserPromptFormat ?? "当前新议题：{question}\n\n本轮讨论已有发言历史：\n{previousTurns}\n\n根据以上记录，请返回下一个最契合的候选专家 ID：")
+    .replace(/{question}/g, question)
+    .replace(/{previousTurns}/g, previousTurnsText);
 
   promptMessages.push({ role: "user", content: currentUserTurnText });
 
@@ -580,10 +614,14 @@ export async function getFinalConclusion({
 
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
 
+  const contextText = projectContext ? `会议背景信息：\n${projectContext}` : "";
+  const userContent = (systemPrompts.finalConclusionUserPromptFormat ?? "{context}\n\n请根据上述会议全程记录，提炼一份极具执行指导意义的最终结论（仅输出 Markdown）。")
+    .replace(/{context}/g, contextText);
+
   const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
     { role: "system", content: systemPrompt },
     ...historyMessages,
-    { role: "user", content: projectContext ? `会议背景信息：\n${projectContext}\n\n请根据上述会议全程记录，提炼一份极具执行指导意义的最终结论（仅输出 Markdown）。` : "请根据上述会议全程记录，提炼一份极具执行指导意义的最终结论（仅输出 Markdown）。" }
+    { role: "user", content: userContent }
   ];
 
   const responseText = await callLLM({
