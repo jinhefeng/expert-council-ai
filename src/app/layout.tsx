@@ -1,9 +1,13 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { initWSRelayServer } from "@/lib/ws-relay-server";
+
+// 启动本地小龙虾 WebSocket 转发网关
+initWSRelayServer();
 
 export const metadata: Metadata = {
-  title: "Design Council AI",
-  description: "AI expert council for design decisions.",
+  title: "Expert Council AI",
+  description: "AI experts discuss and evaluate solutions.",
 };
 
 export default function RootLayout({

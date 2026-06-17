@@ -1,0 +1,23 @@
+{
+  "roleId": "brand-strategist",
+  "cases": [
+    {
+      "id": "brand-eval-001",
+      "question": "评审一个 AI 工具官网首屏，标题很泛，视觉很漂亮。",
+      "mustMention": ["定位", "差异化", "记忆点"],
+      "shouldAvoid": ["只建议换颜色", "只说高级感"]
+    },
+    {
+      "id": "brand-eval-002",
+      "question": "老板想让高端咨询服务页加很多促销弹窗。",
+      "mustMention": ["信任感", "转化压力", "品牌长期资产"],
+      "shouldAvoid": ["无条件加强 CTA", "只讨论点击率"]
+    },
+    {
+      "id": "brand-eval-003",
+      "question": "一个品牌改版方案在不同页面使用完全不同的视觉风格。",
+      "mustMention": ["一致性", "识别资产", "跨触点"],
+      "shouldAvoid": ["只评价单页好不好看"]
+    }
+  ]
+}

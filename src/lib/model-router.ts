@@ -1,406 +1,635 @@
-import { Expert, moderatorModes, pickExperts } from "./experts";
+import { Expert, LLMEngineConfig, ChatMessage, LLMParamsConfig, SystemPromptsConfig } from "./types";
+import { moderatorModes } from "./experts";
+import { extractAndCleanJson } from "./content-parser";
 
-export type DiscussionRequest = {
-  question: string;
-  projectContext?: string;
-  conversationHistory?: ConversationTurn[];
-  expertIds: string[];
-  customExperts?: Expert[];
-  moderatorId?: string;
-  provider?: "mock" | "qwen";
-};
+// 从本地环境变量自动生成系统默认引擎
+export function getSystemEngine(): LLMEngineConfig | null {
+  if (typeof process === "undefined") return null;
 
-export type ConversationTurn = {
-  role: "user" | "assistant";
-  content: string;
-  sourceNames?: string[];
-};
-
-export type ExpertRound = {
-  expertId: string;
-  expertName: string;
-  title: string;
-  stance: string;
-  concern: string;
-  recommendation: string;
-  tradeoff: string;
-};
-
-export type DiscussionResponse = {
-  provider: "mock" | "qwen";
-  model: string;
-  usedRealModel: boolean;
-  note?: string;
-  expertRounds: ExpertRound[];
-  synthesis: {
-    summary: string;
-    consensus: string[];
-    disagreements: string[];
-    decisions: string[];
-    nextActions: string[];
-  };
-  promptPreview: string;
-};
-
-export async function createDiscussion(
-  input: DiscussionRequest,
-): Promise<DiscussionResponse> {
-  const question = normalizeText(input.question, 4000);
-  const projectContext = normalizeText(input.projectContext ?? "", 2000);
-  const conversationHistory = normalizeConversationHistory(
-    input.conversationHistory ?? [],
-  );
-  const selectedExperts = resolveSelectedExperts(
-    input.expertIds,
-    input.customExperts,
-  );
-
-  if (!question) {
-    throw new Error("Question is required.");
+  if (process.env.DASHSCOPE_API_KEY) {
+    return {
+      id: "system-qwen",
+      name: "系统通义千问 (DashScope)",
+      provider: "qwen",
+      baseUrl: process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      apiKey: process.env.DASHSCOPE_API_KEY,
+      model: process.env.DASHSCOPE_MODEL || "qwen-plus",
+      isActive: true,
+    };
   }
 
-  if (selectedExperts.length === 0) {
-    throw new Error("At least one expert is required.");
+  if (process.env.OPENAI_API_KEY) {
+    return {
+      id: "system-openai",
+      name: "系统 OpenAI (env)",
+      provider: "openai",
+      baseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+      apiKey: process.env.OPENAI_API_KEY,
+      model: process.env.OPENAI_MODEL || "gpt-4o",
+      isActive: true,
+    };
   }
 
-  if (input.provider === "qwen" && process.env.DASHSCOPE_API_KEY) {
-    return runQwenDiscussion({
-      question,
-      projectContext,
-      conversationHistory,
-      selectedExperts,
-      moderatorId: input.moderatorId,
-    });
-  }
-
-  return createMockDiscussion({
-    question,
-    projectContext,
-    conversationHistory,
-    selectedExperts,
-    moderatorId: input.moderatorId,
-    providerRequested: input.provider,
-  });
+  return null;
 }
 
-function createMockDiscussion({
-  question,
-  projectContext,
-  conversationHistory,
-  selectedExperts,
-  moderatorId,
-  providerRequested,
-}: {
-  question: string;
-  projectContext: string;
-  conversationHistory: ConversationTurn[];
-  selectedExperts: Expert[];
-  moderatorId?: string;
-  providerRequested?: "mock" | "qwen";
-}): DiscussionResponse {
-  const expertRounds = selectedExperts.map((expert) => mockExpertRound(expert));
-  const moderator =
-    moderatorModes.find((mode) => mode.id === moderatorId) ?? moderatorModes[0];
-
-  return {
-    provider: "mock",
-    model: "local-mock",
-    usedRealModel: false,
-    note:
-      providerRequested === "qwen"
-        ? "没有检测到 DASHSCOPE_API_KEY，已自动使用本地模拟结果。"
-        : undefined,
-    expertRounds,
-    synthesis: {
-      summary: `${moderator.name}认为，这个问题需要先明确目标，再决定视觉、文案和交互的取舍。`,
-      consensus: [
-        "先把本次设计的首要目标写成一句话，避免专家各自优化不同指标。",
-        "把建议拆成高影响、低成本的修改项，先验证最关键假设。",
-        "保留角色分歧，因为分歧往往对应真实业务取舍。",
-      ],
-      disagreements: [
-        "品牌侧可能希望更克制，增长侧可能希望更强行动召唤。",
-        "UI 侧关注完成度，产品侧会追问这些细节是否值得当前阶段投入。",
-      ],
-      decisions: [
-        "默认采用平衡方案：先提升信息清晰度和主行动路径，再做风格强化。",
-        "如果这是商业转化页面，优先让增长设计师和文案策略师参与下一轮。",
-      ],
-      nextActions: [
-        "补充目标用户、页面类型和当前设计截图。",
-        "选择 3 个专家做第一轮深度评审，避免讨论过散。",
-        "把最终建议整理成 P0/P1/P2 修改清单。",
-      ],
-    },
-    promptPreview: buildPromptPreview({
-      question,
-      projectContext,
-      conversationHistory,
-      selectedExperts,
-      moderatorName: moderator.name,
-    }),
-  };
-}
-
-async function runQwenDiscussion({
-  question,
-  projectContext,
-  conversationHistory,
-  selectedExperts,
-  moderatorId,
-}: {
-  question: string;
-  projectContext: string;
-  conversationHistory: ConversationTurn[];
-  selectedExperts: Expert[];
-  moderatorId?: string;
-}): Promise<DiscussionResponse> {
-  const model = process.env.DASHSCOPE_MODEL || "qwen-plus";
-  const moderator =
-    moderatorModes.find((mode) => mode.id === moderatorId) ?? moderatorModes[0];
-
-  const expertTexts = await Promise.all(
-    selectedExperts.map(async (expert) => {
-      const content = await callOpenAICompatible({
-        model,
-        messages: [
-          {
-            role: "system",
-            content: `${expert.systemPrompt}\n你的性格：${expert.temperament}\n请用中文输出：立场、主要风险、建议、取舍。`,
-          },
-          {
-            role: "user",
-            content: buildUserPrompt(
-              question,
-              projectContext,
-              conversationHistory,
-            ),
-          },
-        ],
-      });
-
-      return {
-        expert,
-        content,
-      };
-    }),
-  );
-
-  const synthesisText = await callOpenAICompatible({
-    model,
-    messages: [
-      {
-        role: "system",
-        content:
-          "你是一名设计评审主持人。请综合多位专家观点，输出共识、分歧、最终设计决策和下一步行动。保持清晰、具体、可执行。",
-      },
-      {
-        role: "user",
-        content: [
-          `主持模式：${moderator.name}`,
-          formatConversationHistory(conversationHistory),
-          `问题：${question}`,
-          projectContext ? `项目背景：${projectContext}` : "",
-          "专家观点：",
-          ...expertTexts.map(
-            ({ expert, content }) => `【${expert.name}】\n${content}`,
-          ),
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-      },
-    ],
-  });
-
-  return {
-    provider: "qwen",
-    model,
-    usedRealModel: true,
-    expertRounds: expertTexts.map(({ expert, content }) => ({
-      expertId: expert.id,
-      expertName: expert.name,
-      title: expert.title,
-      stance: content,
-      concern: "由千问模型生成，建议在下一轮把输出结构化成可编辑决策项。",
-      recommendation: "保留原始专家观点，并由主持人进行综合。",
-      tradeoff: "真实模型回答更灵活，但需要后续加 JSON schema 来提升稳定性。",
-    })),
-    synthesis: {
-      summary: synthesisText,
-      consensus: [],
-      disagreements: [],
-      decisions: [],
-      nextActions: [],
-    },
-    promptPreview: buildPromptPreview({
-      question,
-      projectContext,
-      conversationHistory,
-      selectedExperts,
-      moderatorName: moderator.name,
-    }),
-  };
-}
-
-async function callOpenAICompatible({
-  model,
+// 执行通用 LLM 请求
+export async function callLLM({
+  config,
   messages,
+  temperature = 0.5,
+  maxTokens = 4000,
 }: {
-  model: string;
+  config: LLMEngineConfig;
   messages: { role: "system" | "user" | "assistant"; content: string }[];
-}) {
-  const baseUrl =
-    process.env.DASHSCOPE_BASE_URL ||
-    "https://dashscope.aliyuncs.com/compatible-mode/v1";
+  temperature?: number;
+  maxTokens?: number;
+}): Promise<string> {
+  const baseUrl = config.baseUrl || "https://api.openai.com/v1";
+  const apiKey = config.apiKey;
+  const model = config.model;
+
+  if (!apiKey) {
+    throw new Error(`引擎 "${config.name}" 未配置 API Key`);
+  }
+
+  let response;
+  let retryCount = 0;
+  const maxRetries = 2;
+  let lastError = null;
+
+  while (retryCount <= maxRetries) {
+    try {
+      const payload: any = {
+        model,
+        messages: config.isReasoningModel ? messages.map(m => m.role === "system" ? { ...m, role: "user" } : m) : messages,
+        max_tokens: maxTokens ?? 4000,
+        ...(config.isReasoningModel ? {} : { temperature }),
+      };
+
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`\n========== [LLM Request (Sync): ${model}] ==========`);
+        console.log(JSON.stringify(payload, null, 2));
+        console.log(`====================================================\n`);
+      }
+
+      response = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "Connection": "close",
+        },
+        body: JSON.stringify(payload),
+      });
+      break; // Success
+    } catch (e: any) {
+      lastError = e;
+      if (e.message && e.message.includes("fetch failed")) {
+        console.warn(`[callLLM] fetch failed (retry ${retryCount}/${maxRetries}):`, e.message);
+        retryCount++;
+        if (retryCount <= maxRetries) {
+          // Wait 2 seconds before retry
+          await new Promise(res => setTimeout(res, 2000));
+          continue;
+        }
+      }
+      throw e;
+    }
+  }
+
+  if (!response) {
+    throw lastError || new Error("模型请求完全失败");
+  }
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`模型请求失败: ${detail}`);
+  }
+
+  const data = await response.json();
+  
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`\n========== [LLM Response (Sync): ${model}] ==========`);
+    console.log(JSON.stringify(data, null, 2));
+    console.log(`=====================================================\n`);
+  }
+  
+  if (data.error) {
+    throw new Error(`模型接口返回错误 (HTTP 200): ${JSON.stringify(data.error)}`);
+  }
+  
+  const finishReason = data.choices?.[0]?.finish_reason;
+  const content = data.choices?.[0]?.message?.content;
+  
+  if (finishReason === "length" && (!content || content.trim() === "")) {
+    throw new Error(`生成被截断！模型达到了最大 Token 限制 (当前限制为 ${maxTokens}，可能是推理模型思考过程太长耗尽了 Token)。请调大 maxTokens。原生返回: ${JSON.stringify(data)}`);
+  }
+
+  if (content === undefined || content === null || content.trim() === "") {
+    throw new Error(`模型未返回有效内容。大模型原生返回数据: ${JSON.stringify(data)}`);
+  }
+  return content.trim();
+}
+
+// 执行流式 LLM 请求
+export async function callLLMStream({
+  config,
+  messages,
+  temperature = 0.5,
+  maxTokens = 4000,
+}: {
+  config: LLMEngineConfig;
+  messages: { role: "system" | "user" | "assistant"; content: string }[];
+  temperature?: number;
+  maxTokens?: number;
+}): Promise<Response> {
+  const baseUrl = config.baseUrl || "https://api.openai.com/v1";
+  const apiKey = config.apiKey;
+  const model = config.model;
+
+  if (!apiKey) {
+    throw new Error(`引擎 "${config.name}" 未配置 API Key`);
+  }
+
+  const payload: any = {
+    model,
+    messages: config.isReasoningModel ? messages.map(m => m.role === "system" ? { ...m, role: "user" } : m) : messages,
+    stream: true,
+    max_tokens: maxTokens ?? 4000,
+  };
+
+  if (!config.isReasoningModel) {
+    payload.temperature = temperature;
+  }
+
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`\n========== [LLM Request (Stream): ${model}] ==========`);
+    console.log(JSON.stringify(payload, null, 2));
+    console.log(`======================================================\n`);
+  }
+
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${process.env.DASHSCOPE_API_KEY}`,
+      "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: 0.4,
-      max_tokens: 1200,
-    }),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(`Model request failed: ${detail}`);
+    throw new Error(`模型流式请求失败: ${detail}`);
   }
 
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content?.trim() || "模型没有返回内容。";
+  return response;
 }
 
-function mockExpertRound(expert: Expert): ExpertRound {
-  const firstFocus = expert.focus[0];
-  const secondFocus = expert.focus[1] ?? expert.focus[0];
+// 将前端完整的 ChatMessage[] 聊天流转换格式化为大模型兼容的对话轮次
+export function formatConversationHistoryForLLM(
+  history: ChatMessage[],
+): { role: "user" | "assistant"; content: string }[] {
+  const result: { role: "user" | "assistant"; content: string }[] = [];
+
+  for (const msg of history) {
+    const cleanedContent = (msg.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    if (!cleanedContent) continue;
+
+    if (msg.role === "user") {
+      result.push({
+        role: "user",
+        content: cleanedContent,
+      });
+    } else if (msg.role === "expert") {
+      // 携带发言专家名称，以便其他智能体明确引用关系
+      result.push({
+        role: "assistant",
+        content: `【${msg.senderName} (${msg.senderTitle || "专家"})】：${cleanedContent}`,
+      });
+    } else if (msg.role === "moderator") {
+      result.push({
+        role: "assistant",
+        content: `【主持人】：${cleanedContent}`,
+      });
+    }
+  }
+
+  return result;
+}
+
+// 拼接对抗强度相关的系统指示
+function getIntensityPrompt(personal: number, global: number, prompts: SystemPromptsConfig): string {
+  if (!prompts) return "";
+  const intensity = Math.min(5, Math.max(1, Math.round((personal + global) / 2)));
+  switch (intensity) {
+    case 1: return (prompts.intensityLevel1 ?? "").replace("{intensity}", "1");
+    case 2: return (prompts.intensityLevel2 ?? "").replace("{intensity}", "2");
+    case 3: return (prompts.intensityLevel3 ?? "").replace("{intensity}", "3");
+    case 4: return (prompts.intensityLevel4 ?? "").replace("{intensity}", "4");
+    case 5: return (prompts.intensityLevel5 ?? "").replace("{intensity}", "5");
+    default: return (prompts.intensityLevel3 ?? "").replace("{intensity}", "3");
+  }
+}
+
+// 格式化本轮此前专家发言（通用辅助函数）
+function formatPreviousTurns(
+  previousTurns: { expertName: string; expertTitle?: string; content: string }[],
+  headerPrompt: string,
+  emptyPrompt: string,
+): string {
+  if (!previousTurns.length) return emptyPrompt;
+  const formatted = previousTurns.map((turn) => {
+    const cleaned = (turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    const blockquote = cleaned.split("\n").map(line => `> ${line}`).join("\n");
+    const title = turn.expertTitle ? ` (${turn.expertTitle})` : "";
+    return `【${turn.expertName}${title}】发言：\n${blockquote}`;
+  }).join("\n\n");
+  return `${headerPrompt}\n${formatted}`;
+}
+
+// 1. 生成单步专家发言
+export async function getExpertTurn({
+  question,
+  projectContext = "",
+  expert,
+  previousTurns = [],
+  globalDebateIntensity = 3,
+  engineConfig,
+  conversationHistory = [],
+  llmParams,
+  systemPrompts,
+  userProfile,
+}: {
+  question: string;
+  projectContext?: string;
+  expert: Expert;
+  previousTurns: { expertName: string; expertTitle?: string; content: string }[];
+  globalDebateIntensity?: number;
+  engineConfig?: LLMEngineConfig;
+  conversationHistory?: ChatMessage[];
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
+  userProfile?: { name: string; title: string };
+}): Promise<{
+  content: string;
+  expertStance: {
+    stance: string;
+    concern: string;
+    recommendation: string;
+    tradeoff: string;
+  };
+}> {
+  const activeEngine = engineConfig || getSystemEngine();
+
+  if (!activeEngine) {
+    throw new Error(
+      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+    );
+  }
+
+  const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity, systemPrompts);
+  const focusStr = Array.isArray(expert.focus) ? expert.focus.join("、") : (expert.focus || "无特定焦点");
+  
+  const userTitle = userProfile?.title || "首席决策官";
+  const userName = userProfile?.name || "主持人";
+
+  const systemPrompt = (systemPrompts?.expertTurnFormat ?? "")
+    .replace(/{expertName}/g, expert.name || "")
+    .replace(/{expertTitle}/g, expert.title || "")
+    .replace(/{lens}/g, expert.lens || "全局评估")
+    .replace(/{temperament}/g, expert.temperament || "中立冷静")
+    .replace(/{focus}/g, focusStr)
+    .replace(/{systemPrompt}/g, expert.systemPrompt || "")
+    .replace(/{intensityPrompt}/g, intensityPrompt)
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName);
+
+  const historyMessages = formatConversationHistoryForLLM(conversationHistory);
+
+  const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+  ];
+
+  const currentTurnPreviousText = formatPreviousTurns(
+    previousTurns,
+    systemPrompts.prevTurnsHeaderPrompt ?? "本轮专家讨论中，此前已发言记录：",
+    systemPrompts.prevTurnsEmptyPrompt ?? "本轮中你是第一个发言的专家。",
+  );
+
+  const contextText = projectContext ? `项目背景及附件信息：\n${projectContext}` : "";
+
+  const currentUserTurnText = (systemPrompts.expertUserPromptFormat ?? "【来自人类决策者（{userTitle} {userName}）的现场干预与最新指令】：\n{question}\n\n{context}\n\n{previousTurns}\n\n请针对人类决策者的指令表达你的专业视角发言：")
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName)
+    .replace(/{question}/g, question)
+    .replace(/{context}/g, contextText)
+    .replace(/{previousTurns}/g, currentTurnPreviousText);
+
+  promptMessages.push({ role: "user", content: currentUserTurnText });
+
+  const responseText = await callLLM({
+    config: activeEngine,
+    messages: promptMessages,
+    temperature: llmParams.expertTemperature,
+    maxTokens: llmParams.maxTokens,
+  });
+  return extractAndCleanJson(responseText, expert.name);
+}
+
+// 1.5 专家发言流式接口
+export async function getExpertTurnStream({
+  question,
+  projectContext = "",
+  expert,
+  previousTurns = [],
+  globalDebateIntensity = 3,
+  engineConfig,
+  conversationHistory = [],
+  llmParams,
+  systemPrompts,
+  userProfile,
+}: {
+  question: string;
+  projectContext?: string;
+  expert: Expert;
+  previousTurns: { expertName: string; expertTitle?: string; content: string }[];
+  globalDebateIntensity?: number;
+  engineConfig?: LLMEngineConfig;
+  conversationHistory?: ChatMessage[];
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
+  userProfile?: { name: string; title: string };
+}): Promise<Response> {
+  const activeEngine = engineConfig || getSystemEngine();
+
+  if (!activeEngine) {
+    throw new Error(
+      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+    );
+  }
+
+  const intensityPrompt = getIntensityPrompt(expert.debateIntensity, globalDebateIntensity, systemPrompts);
+  const focusStr = Array.isArray(expert.focus) ? expert.focus.join("、") : (expert.focus || "无特定焦点");
+
+  const userTitle = userProfile?.title || "首席决策官";
+  const userName = userProfile?.name || "主持人";
+
+  const systemPrompt = (systemPrompts?.expertTurnFormat ?? "")
+    .replace(/{expertName}/g, expert.name || "")
+    .replace(/{expertTitle}/g, expert.title || "")
+    .replace(/{lens}/g, expert.lens || "全局评估")
+    .replace(/{temperament}/g, expert.temperament || "中立冷静")
+    .replace(/{focus}/g, focusStr)
+    .replace(/{systemPrompt}/g, expert.systemPrompt || "")
+    .replace(/{intensityPrompt}/g, intensityPrompt)
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName);
+
+  const historyMessages = formatConversationHistoryForLLM(conversationHistory);
+
+  const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+  ];
+
+  const currentTurnPreviousText = formatPreviousTurns(
+    previousTurns,
+    systemPrompts.prevTurnsHeaderPrompt ?? "本轮专家讨论中，此前已发言记录：",
+    systemPrompts.prevTurnsEmptyPrompt ?? "本轮中你是第一个发言的专家。",
+  );
+
+  const contextText = projectContext ? `项目背景及附件信息：\n${projectContext}` : "";
+
+  const currentUserTurnText = (systemPrompts.expertUserPromptFormat ?? "【来自人类决策者（{userTitle} {userName}）的现场干预与最新指令】：\n{question}\n\n{context}\n\n{previousTurns}\n\n请针对人类决策者的指令表达你的专业视角发言：")
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName)
+    .replace(/{question}/g, question)
+    .replace(/{context}/g, contextText)
+    .replace(/{previousTurns}/g, currentTurnPreviousText);
+
+  promptMessages.push({ role: "user", content: currentUserTurnText });
+
+  return callLLMStream({
+    config: activeEngine,
+    messages: promptMessages,
+    temperature: llmParams.expertTemperature,
+    maxTokens: llmParams.maxTokens,
+  });
+}
+
+// 2. 主持人决策综合
+export async function getSynthesis({
+  question,
+  projectContext = "",
+  expertRounds,
+  moderatorId = "balanced",
+  engineConfig,
+  conversationHistory = [],
+  llmParams,
+  systemPrompts,
+  userProfile,
+}: {
+  question: string;
+  projectContext?: string;
+  expertRounds: { expertName: string; content: string }[];
+  moderatorId?: string;
+  engineConfig?: LLMEngineConfig;
+  conversationHistory?: ChatMessage[];
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
+  userProfile?: { name: string; title: string };
+}): Promise<{
+  summary: string;
+  consensus: string[];
+  disagreements: string[];
+  decisions: string[];
+  nextActions: string[];
+}> {
+  const activeEngine = engineConfig || getSystemEngine();
+  const moderator = moderatorModes.find((m) => m.id === moderatorId) || moderatorModes[0];
+
+  if (!activeEngine) {
+    throw new Error(
+      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+    );
+  }
+
+  const moderatorName = systemPrompts.moderatorName || moderator.name;
+  const moderatorTitle = systemPrompts.moderatorTitle || "决策协调官";
+
+  const systemPrompt = (systemPrompts?.synthesisPrompt ?? "")
+    .replace("{moderatorName}", moderatorName)
+    .replace("{moderatorDesc}", moderator.description)
+    .replace(/{moderatorTitle}/g, moderatorTitle);
+
+  // 格式化历史消息
+  const historyMessages = formatConversationHistoryForLLM(conversationHistory);
+
+  const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+  ];
+
+  const expertTurnsText = expertRounds.map((round) => `【${round.expertName}】：${round.content}`).join("\n\n");
+  const contextText = projectContext ? `项目背景：\n${projectContext}` : "";
+  const userTitle = userProfile?.title || "首席决策官";
+  const userName = userProfile?.name || "主持人";
+
+  const currentUserTurnText = (systemPrompts.synthesisUserPromptFormat ?? "当前会议议题：{question}\n\n{context}\n\n本轮参会专家发言记录：\n{expertTurns}\n\n请对以上圆桌会议内容进行主持人综合总结。")
+    .replace(/{question}/g, question)
+    .replace(/{context}/g, contextText)
+    .replace(/{expertTurns}/g, expertTurnsText)
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName);
+
+  promptMessages.push({ role: "user", content: currentUserTurnText });
+
+  const responseText = await callLLM({
+    config: activeEngine,
+    messages: promptMessages,
+    temperature: llmParams.synthesisTemperature,
+    maxTokens: llmParams.maxTokens,
+  });
+
+  try {
+    const jsonMatch = responseText.match(/({[\s\S]*?})/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[1]);
+      if (parsed && typeof parsed === "object" && "summary" in parsed) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.error("Failed to parse synthesis JSON", responseText, e);
+  }
 
   return {
-    expertId: expert.id,
-    expertName: expert.name,
-    title: expert.title,
-    stance: `我会先从${firstFocus}看这个问题，而不是马上进入具体画面细节。`,
-    concern: `当前最大的风险是${secondFocus}没有被说清楚，导致后续建议可能各自优化不同目标。`,
-    recommendation: `建议先补充目标用户、业务目标和当前方案截图，再把修改项拆成“必须改”和“可探索”。`,
-    tradeoff: `如果追求速度，可以先做轻量调整；如果追求长期质量，需要把${expert.focus.join("、")}纳入同一套判断标准。`,
+    summary: responseText,
+    consensus: ["已记录在总结中"],
+    disagreements: ["参见上述文本"],
+    decisions: ["见总结详情"],
+    nextActions: ["立即推进相关决策评估"],
   };
 }
 
-function buildUserPrompt(
-  question: string,
-  projectContext: string,
-  conversationHistory: ConversationTurn[],
-) {
-  return [
-    formatConversationHistory(conversationHistory),
-    projectContext ? `项目背景：${projectContext}` : "",
-    `设计问题：${question}`,
-    "请输出具体判断，不要只给原则。",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-}
-
-function buildPromptPreview({
+// 3. 智能相关度指派算法
+export async function getNextSpeaker({
   question,
-  projectContext,
-  conversationHistory,
-  selectedExperts,
-  moderatorName,
+  previousTurns = [],
+  candidateExperts,
+  engineConfig,
+  conversationHistory = [],
+  llmParams,
+  systemPrompts,
 }: {
   question: string;
-  projectContext: string;
-  conversationHistory: ConversationTurn[];
-  selectedExperts: Expert[];
-  moderatorName: string;
-}) {
-  return [
-    `主持人：${moderatorName}`,
-    `参与专家：${selectedExperts.map((expert) => expert.name).join("、")}`,
-    formatConversationHistory(conversationHistory),
-    projectContext ? `项目背景：${projectContext}` : "",
-    `设计问题：${question}`,
-    "请先让每位专家独立判断，再整理共识、分歧、最终决策和下一步行动。",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-}
-
-function normalizeText(value: string, maxLength: number) {
-  return value.trim().slice(0, maxLength);
-}
-
-function normalizeConversationHistory(turns: ConversationTurn[]) {
-  return turns
-    .slice(-8)
-    .map((turn) => ({
-      role: turn.role,
-      content: normalizeText(turn.content, 1200),
-      sourceNames: turn.sourceNames?.slice(0, 6).map((name) =>
-        normalizeText(name, 120),
-      ),
-    }))
-    .filter((turn) => turn.content);
-}
-
-function formatConversationHistory(turns: ConversationTurn[]) {
-  if (!turns.length) {
+  previousTurns: { expertName: string; expertTitle?: string; content: string }[];
+  candidateExperts: Expert[];
+  engineConfig?: LLMEngineConfig;
+  conversationHistory?: ChatMessage[];
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
+}): Promise<string> {
+  if (candidateExperts.length === 0) {
     return "";
   }
 
-  return [
-    "最近对话上下文：",
-    ...turns.map((turn, index) => {
-      const speaker = turn.role === "user" ? "用户" : "专家圆桌";
-      const sourceLine = turn.sourceNames?.length
-        ? `\n附件：${turn.sourceNames.join("、")}`
-        : "";
+  const activeEngine = engineConfig || getSystemEngine();
 
-      return `${index + 1}. ${speaker}：${turn.content}${sourceLine}`;
-    }),
-    "请把当前问题理解为这段对话的延续，避免重复已经回答过的内容。",
-  ].join("\n");
-}
-
-function resolveSelectedExperts(ids: string[], customExperts: Expert[] = []) {
-  const idSet = new Set(ids);
-  const builtInExperts = pickExperts(ids);
-  const safeCustomExperts = customExperts
-    .map(sanitizeCustomExpert)
-    .filter((expert): expert is Expert => Boolean(expert))
-    .filter((expert) => idSet.has(expert.id));
-
-  return [...builtInExperts, ...safeCustomExperts];
-}
-
-function sanitizeCustomExpert(expert: Expert): Expert | null {
-  const id = normalizeText(expert.id, 80);
-  const name = normalizeText(expert.name, 40);
-  const title = normalizeText(expert.title, 40) || "自定义视角";
-  const lens = normalizeText(expert.lens, 240);
-  const temperament =
-    normalizeText(expert.temperament, 160) || "按照自定义人物设定进行判断。";
-  const systemPrompt = normalizeText(expert.systemPrompt, 1200);
-
-  if (!id || !name || !lens) {
-    return null;
+  if (!activeEngine) {
+    if (candidateExperts.length > 1) {
+      throw new Error(
+        "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+      );
+    }
+    return candidateExperts[0].id;
+  }
+  if (candidateExperts.length === 1) {
+    return candidateExperts[0].id;
   }
 
-  return {
-    id,
-    name,
-    title,
-    lens,
-    temperament,
-    focus: expert.focus?.length
-      ? expert.focus.map((item) => normalizeText(item, 24)).filter(Boolean)
-      : ["自定义判断", "偏好", "风险", "决策影响"],
-    systemPrompt:
-      systemPrompt ||
-      `你是${name}。请按照这个人物视角评审设计：${lens}。你的性格和判断偏好：${temperament}。请指出这个人物会认可什么、反对什么、担心什么，以及会推动什么修改。`,
-  };
+  const candidateList = candidateExperts.map((exp) => `- ID: ${exp.id}, 专家名称: ${exp.name}, 判断视角: ${exp.lens}`).join("\n");
+
+  const systemPrompt = (systemPrompts?.nextSpeakerPrompt ?? "").replace("{candidateList}", candidateList);
+
+  const historyMessages = formatConversationHistoryForLLM(conversationHistory);
+
+  const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+  ];
+
+  const previousTurnsText = formatPreviousTurns(
+    previousTurns,
+    systemPrompts.prevTurnsHeaderPrompt ?? "本轮专家讨论中，此前已发言记录：",
+    systemPrompts.prevTurnsEmptyPrompt ?? "本轮中你是第一个发言的专家。",
+  );
+
+  const currentUserTurnText = (systemPrompts.nextSpeakerUserPromptFormat ?? "当前新议题：{question}\n\n本轮讨论已有发言历史：\n{previousTurns}\n\n根据以上记录，请返回下一个最契合的候选专家 ID：")
+    .replace(/{question}/g, question)
+    .replace(/{previousTurns}/g, previousTurnsText);
+
+  promptMessages.push({ role: "user", content: currentUserTurnText });
+
+  const chosenId = await callLLM({
+    config: activeEngine,
+    messages: promptMessages,
+    temperature: llmParams.nextSpeakerTemperature,
+    maxTokens: llmParams.maxTokens,
+  });
+
+  const cleanedId = chosenId.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+  let matched = candidateExperts.find((c) => c.id === cleanedId);
+  if (!matched) {
+    matched = candidateExperts.find((c) => cleanedId.includes(c.id));
+  }
+  return matched ? matched.id : candidateExperts[0].id;
+}
+
+// 4. 提炼全场最终结论
+export async function getFinalConclusion({
+  projectContext,
+  conversationHistory = [],
+  engineConfig,
+  llmParams,
+  systemPrompts,
+}: {
+  projectContext?: string;
+  conversationHistory: ChatMessage[];
+  engineConfig?: LLMEngineConfig;
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
+}): Promise<string> {
+  const activeEngine = engineConfig || getSystemEngine();
+  
+  if (!activeEngine) {
+    throw new Error(
+      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+    );
+  }
+
+  const systemPrompt = systemPrompts.finalConclusionPrompt;
+
+  const historyMessages = formatConversationHistoryForLLM(conversationHistory);
+
+  const contextText = projectContext ? `会议背景信息：\n${projectContext}` : "";
+  const userContent = (systemPrompts.finalConclusionUserPromptFormat ?? "{context}\n\n请根据上述会议全程记录，提炼一份极具执行指导意义的最终结论（仅输出 Markdown）。")
+    .replace(/{context}/g, contextText);
+
+  const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+    { role: "user", content: userContent }
+  ];
+
+  const responseText = await callLLM({
+    config: activeEngine,
+    messages: promptMessages,
+    temperature: llmParams.conclusionTemperature,
+    maxTokens: llmParams.maxTokens,
+  });
+
+  return responseText.trim();
 }
