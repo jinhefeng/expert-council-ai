@@ -152,6 +152,10 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
         isExternalAgent: initialData?.isExternalAgent ?? false,
         agentType: initialData?.agentType || "openclaw",
         botToken: initialData?.botToken || "",
+        ragEnabled: initialData?.ragEnabled ?? false,
+        ragEndpoint: initialData?.ragEndpoint || "",
+        ragToken: initialData?.ragToken || "",
+        ragDatasetId: initialData?.ragDatasetId || "",
       });
       setError(null);
     }
@@ -190,6 +194,10 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
       isCustom: draft.isCustom,
       isExternalAgent: draft.isExternalAgent,
       botToken: draft.isExternalAgent ? draft.botToken : undefined,
+      ragEnabled: draft.isExternalAgent ? false : draft.ragEnabled,
+      ragEndpoint: draft.isExternalAgent ? undefined : draft.ragEndpoint,
+      ragToken: draft.isExternalAgent ? undefined : draft.ragToken,
+      ragDatasetId: draft.isExternalAgent ? undefined : draft.ragDatasetId,
     };
 
     onSave(finalExpert);
@@ -388,7 +396,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                   />
                 </label>
 
-                <label className="compact-field">
+                <label className="compact-field" style={{ marginBottom: "16px" }}>
                   <span>默认辩论激烈度：{draft.debateIntensity}<InfoTooltip text="1为温和赞同，5为猛烈抨击。此值将与会议全局强度取平均，决定该专家的最终表现" /></span>
                   <input
                     type="range"
@@ -399,6 +407,63 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                     style={{ width: "100%", marginTop: "8px" }}
                   />
                 </label>
+
+                {/* 是否开启 RAG 检索 */}
+                <label className={`external-agent-toggle-card ${draft.ragEnabled ? "is-checked" : ""}`} style={{ marginTop: "16px", marginBottom: "12px" }}>
+                  <div className="toggle-switch-label-area">
+                    <span className="toggle-switch-title" style={{ display: "flex", alignItems: "center", fontWeight: 600 }}>
+                      挂载外部 RAG 知识库检索
+                      <InfoTooltip text="开启后，大模型在分析评审当前议题时会从配置的外部数据库中自动检索相关事实并结合评审。" />
+                    </span>
+                  </div>
+                  <div style={{ display: "inline-flex", alignItems: "center" }}>
+                    <input
+                      type="checkbox"
+                      className="switch-control-input"
+                      checked={draft.ragEnabled || false}
+                      onChange={e => {
+                        setDraft(prev => ({
+                          ...prev,
+                          ragEnabled: e.target.checked
+                        }));
+                      }}
+                    />
+                    <span className="switch-control-track">
+                      <span className="switch-control-thumb" />
+                    </span>
+                  </div>
+                </label>
+
+                {draft.ragEnabled && (
+                  <div className="external-agent-config-panel" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", padding: "16px", marginTop: "4px", marginBottom: "16px", background: "var(--surface-strong)", border: "1px solid var(--line-strong)", borderRadius: "8px" }}>
+                    <label className="compact-field" style={{ gridColumn: "span 2", marginBottom: 0 }}>
+                      <span>RAG 知识库 API 端点地址 *<InfoTooltip text="接收 POST 请求并返回 JSON { chunks: string[] } 格式的检索端点" /></span>
+                      <input
+                        required
+                        placeholder="如：https://api.dify.ai/v1/datasets/retrieval"
+                        value={draft.ragEndpoint || ""}
+                        onChange={e => setDraft(prev => ({ ...prev, ragEndpoint: e.target.value }))}
+                      />
+                    </label>
+                    <label className="compact-field" style={{ marginBottom: 0 }}>
+                      <span>鉴权 Token (Bearer Token)<InfoTooltip text="调用该 RAG 接口所必须的 Authorization 鉴权密钥" /></span>
+                      <input
+                        type="password"
+                        placeholder="请输入鉴权密钥 (可选)"
+                        value={draft.ragToken || ""}
+                        onChange={e => setDraft(prev => ({ ...prev, ragToken: e.target.value }))}
+                      />
+                    </label>
+                    <label className="compact-field" style={{ marginBottom: 0 }}>
+                      <span>数据集/集合标识 ID (Dataset ID)<InfoTooltip text="特定匹配的目标检索知识库库集合 ID (可选)" /></span>
+                      <input
+                        placeholder="请输入目标数据集 ID (可选)"
+                        value={draft.ragDatasetId || ""}
+                        onChange={e => setDraft(prev => ({ ...prev, ragDatasetId: e.target.value }))}
+                      />
+                    </label>
+                  </div>
+                )}
               </>
             )}
 

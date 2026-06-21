@@ -51,6 +51,15 @@ function getHelpPlaceholders(fieldKey: keyof SystemPromptsConfig): React.ReactNo
       "{meetingName} - 圆桌会议名称",
       "{meetingDesc} - 圆桌会议描述"
     ],
+    inquiryJudgmentPrompt: [
+      "{question} - 当前人类决策者的最新议题或补充内容",
+      "{context} - 当前会议项目背景与附件等上下文内容"
+    ],
+    decisionOptionsPrompt: [
+      "{question} - 当前圆桌会议的核心议题",
+      "{context} - 会议项目背景与上下文",
+      "{synthesisSummary} - 主持人本轮刚刚提炼出的综合总结纪要"
+    ],
     nextSpeakerPrompt: [
       "{candidateList} - 剩余发言候选专家的列表信息（含 ID 和 姓名）"
     ],
@@ -1040,9 +1049,17 @@ export default function AdminPage() {
                   <span>最终结论 Temperature (0-2)<CommonHelpButton title="最终结论 Temperature" text="控制最终结案陈词的发挥空间。建议较低以保证高度结构化" onShowHelp={showCommonHelp} /></span>
                   <input type="number" step="0.1" required value={llmParams.conclusionTemperature} onChange={e => setLlmParams({ ...llmParams, conclusionTemperature: parseFloat(e.target.value) })} />
                 </label>
-                <label className="compact-field" style={{ gridColumn: "1 / -1" }}>
+                <label className="compact-field">
                   <span>智能派单 Temperature (0-2)<CommonHelpButton title="智能派单 Temperature" text="大模型决定下一个发言人时的参数。建议极低(0.1)，保证其选人的逻辑稳定性" onShowHelp={showCommonHelp} /></span>
                   <input type="number" step="0.1" required value={llmParams.nextSpeakerTemperature} onChange={e => setLlmParams({ ...llmParams, nextSpeakerTemperature: parseFloat(e.target.value) })} />
+                </label>
+                <label className="compact-field">
+                  <span>自主决策最大推进轮数 (1-10)<CommonHelpButton title="自主决策最大推进轮数" text="自主决策模式下，讨论能够自动进入的最多反馈大轮数。建议设为3，防止无限循环" onShowHelp={showCommonHelp} /></span>
+                  <input type="number" required value={llmParams.maxAutonomousRounds ?? 3} onChange={e => setLlmParams({ ...llmParams, maxAutonomousRounds: parseInt(e.target.value) })} />
+                </label>
+                <label className="compact-field" style={{ gridColumn: "1 / -1" }}>
+                  <span>自主决策倒计时秒数 (秒)<CommonHelpButton title="自主决策倒计时秒数" text="自主决策模式下，展现决策面板后进行自动选择并推进的等待秒数。在此期间用户移入鼠标可取消倒计时并转换为普通决策模式" onShowHelp={showCommonHelp} /></span>
+                  <input type="number" required value={llmParams.autonomousCountdownSeconds ?? 10} onChange={e => setLlmParams({ ...llmParams, autonomousCountdownSeconds: parseInt(e.target.value) })} />
                 </label>
                 <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>
                   <button type="submit" className="primary-button">保存调度参数</button>
@@ -1225,6 +1242,24 @@ export default function AdminPage() {
                         tooltip="提炼纪要时拼装 User 引导词的模板。支持占位符：&#10;• {question} - 圆桌当前议题&#10;• {context} - 项目背景及附件上下文&#10;• {expertTurns} - 本轮已发言记录"
                       />
                       <textarea style={{ minHeight: "100px", fontFamily: "monospace" }} required value={systemPrompts.synthesisUserPromptFormat || ""} onChange={e => setSystemPrompts({ ...systemPrompts, synthesisUserPromptFormat: e.target.value })} />
+                    </div>
+
+                    <div className="compact-field">
+                      <PromptLabelHeader 
+                        title="信息追问澄清判定指令" 
+                        fieldKey="inquiryJudgmentPrompt" 
+                        tooltip="开启追问时，用于判断人类输入信息是否足够，并提炼追问问题的指令。支持占位符：&#10;• {question} - 人类最新议题或补充内容&#10;• {context} - 项目背景与附件内容"
+                      />
+                      <textarea style={{ minHeight: "120px", fontFamily: "monospace" }} required value={systemPrompts.inquiryJudgmentPrompt || ""} onChange={e => setSystemPrompts({ ...systemPrompts, inquiryJudgmentPrompt: e.target.value })} />
+                    </div>
+
+                    <div className="compact-field">
+                      <PromptLabelHeader 
+                        title="决策备选意见生成指令" 
+                        fieldKey="decisionOptionsPrompt" 
+                        tooltip="主持人总结后，用于生成 2-4 个方向性决策备选选项的指令。支持占位符：&#10;• {question} - 当前议题&#10;• {context} - 项目背景&#10;• {synthesisSummary} - 最近提炼出的纪要"
+                      />
+                      <textarea style={{ minHeight: "120px", fontFamily: "monospace" }} required value={systemPrompts.decisionOptionsPrompt || ""} onChange={e => setSystemPrompts({ ...systemPrompts, decisionOptionsPrompt: e.target.value })} />
                     </div>
                   </div>
                 )}

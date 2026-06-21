@@ -27,6 +27,12 @@ export type Expert = TenantScoped & {
   wsEndpoint?: string;                // OneBot 连接地址，例如 ws://localhost:6199/ws
   botToken?: string;                  // OpenClaw 连接 Token
   onebotToken?: string;               // OneBot 鉴权 Token
+  
+  // 外部 RAG 数据库连接参数
+  ragEnabled?: boolean;     // 是否启用外部 RAG 知识检索
+  ragEndpoint?: string;     // 外部 RAG 接口地址
+  ragToken?: string;        // 外部 RAG API 鉴权 Token
+  ragDatasetId?: string;    // 目标知识库/数据集 ID (Collection ID)
 };
 
 export type LLMEngineConfig = TenantScoped & {
@@ -53,6 +59,9 @@ export type Meeting = TenantScoped & {
   updatedAt: number;
   messages: ChatMessage[];
   finalConclusion?: string; // 会议最终结论（可由AI生成并被用户手动编辑）
+  decisionState?: "approved" | "rejected" | "pending"; // 会议决议状态
+  enableInquiryLoop?: boolean; // 会议追问索取信息开关
+  moderatorAutonomy?: "passive" | "facilitative" | "autonomous"; // 三种主持人自主度模式
 };
 
 export type ChatMessage = TenantScoped & {
@@ -95,6 +104,8 @@ export type LLMParamsConfig = TenantScoped & {
   synthesisTemperature: number;
   conclusionTemperature: number;
   nextSpeakerTemperature: number;
+  maxAutonomousRounds?: number;           // 最大自主决策轮数
+  autonomousCountdownSeconds?: number;   // 自主决策倒计时秒数
 };
 
 export type SystemPromptsConfig = TenantScoped & {
@@ -110,6 +121,8 @@ export type SystemPromptsConfig = TenantScoped & {
   meetingDescPrompt: string;
   expertDetailsPrompt: string;
   externalAgentPrompt: string; // 外部智能体全局发言提示词模板
+  inquiryJudgmentPrompt: string; // 信息追问判定提示词模板
+  decisionOptionsPrompt: string; // 决策方向意见提示词模板
   // --- 以下为新增的后台可配置属性 ---
   moderatorName: string;                   // AI 主持人的默认显示姓名
   moderatorTitle: string;                  // AI 主持人的默认核心头衔

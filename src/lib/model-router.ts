@@ -483,6 +483,92 @@ export async function getExpertTurnStream({
   });
 }
 
+// 1.8 主持人总结流式接口
+export async function getSynthesisStream({
+  question,
+  projectContext = "",
+  expertRounds,
+  moderatorId = "balanced",
+  engineConfig,
+  conversationHistory = [],
+  llmParams,
+  systemPrompts,
+  userProfile,
+}: {
+  question: string;
+  projectContext?: string;
+  expertRounds: { expertName: string; content: string }[];
+  moderatorId?: string;
+  engineConfig?: LLMEngineConfig;
+  conversationHistory?: ChatMessage[];
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
+  userProfile?: { name: string; title: string };
+}): Promise<Response> {
+  const activeEngine = engineConfig || getSystemEngine();
+  const moderator = moderatorModes.find((m) => m.id === moderatorId) || moderatorModes[0];
+
+  if (!activeEngine) {
+    throw new Error(
+      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+    );
+  }
+
+  const moderatorName = systemPrompts.moderatorName || moderator.name;
+  const moderatorTitle = systemPrompts.moderatorTitle || "决策协调官";
+
+  const systemPrompt = (systemPrompts?.synthesisPrompt ?? "")
+    .replace("{moderatorName}", moderatorName)
+    .replace("{moderatorDesc}", moderator.description)
+    .replace(/{moderatorTitle}/g, moderatorTitle);
+
+  const historyMessages = formatConversationHistoryForLLM(conversationHistory);
+
+  const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+  ];
+
+  const cleanThink = systemPrompts.cleanThinkForSynthesis !== false;
+  const blockquoteFormat = systemPrompts.blockquoteFormatForTurns !== false;
+
+  const expertTurnsText = expertRounds.map((round) => {
+    let content = round.content ?? "";
+    if (cleanThink) {
+      content = content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      const thinkIdx = content.indexOf("<think>");
+      if (thinkIdx !== -1) {
+        content = content.substring(0, thinkIdx).trim();
+      }
+    }
+    let formattedContent = content.trim();
+    if (blockquoteFormat) {
+      formattedContent = formattedContent.split("\n").map(line => `> ${line}`).join("\n");
+    }
+    return `【${round.expertName}】发言：\n${formattedContent}`;
+  }).join("\n\n");
+  const contextText = projectContext ? `项目背景：\n${projectContext}` : "";
+  const userTitle = userProfile?.title || "首席决策官";
+  const userName = userProfile?.name || "主持人";
+
+  const currentUserTurnText = (systemPrompts.synthesisUserPromptFormat ?? "当前会议议题：{question}\n\n{context}\n\n本轮参会专家发言记录：\n{expertTurns}\n\n请对以上圆桌会议内容进行主持人综合总结。")
+    .replace(/{question}/g, question)
+    .replace(/{context}/g, contextText)
+    .replace(/{expertTurns}/g, expertTurnsText)
+    .replace(/{userTitle}/g, userTitle)
+    .replace(/{userName}/g, userName);
+
+  promptMessages.push({ role: "user", content: currentUserTurnText });
+
+  return callLLMStream({
+    config: activeEngine,
+    messages: promptMessages,
+    temperature: llmParams.synthesisTemperature,
+    maxTokens: llmParams.maxTokens,
+    target: `主持人总结流: ${moderatorName}`,
+  });
+}
+
 // 2. 主持人决策综合
 export async function getSynthesis({
   question,
@@ -716,4 +802,114 @@ export async function getFinalConclusion({
   });
 
   return responseText.trim();
+}
+
+// 5. 评估是否需要追问补充信息
+export async function getInquiryDecision({
+  question,
+  projectContext = "",
+  conversationHistory = [],
+  engineConfig,
+  llmParams,
+  systemPrompts,
+}: {
+  question: string;
+  projectContext?: string;
+  conversationHistory: ChatMessage[];
+  engineConfig?: LLMEngineConfig;
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
+}): Promise<string> {
+  const activeEngine = engineConfig || getSystemEngine();
+  if (!activeEngine) {
+    throw new Error("未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！");
+  }
+
+  const systemPrompt = systemPrompts.inquiryJudgmentPrompt;
+  const historyMessages = formatConversationHistoryForLLM(conversationHistory);
+
+  const contextText = projectContext ? `项目背景及附件信息：\n${projectContext}` : "";
+  const userContent = `当前会议最新议题是：${question}\n\n${contextText}\n\n请评估是否需要用户进一步补充数据事实以开启/继续这次评审。`;
+
+  const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+    { role: "user", content: userContent }
+  ];
+
+  const responseText = await callLLM({
+    config: activeEngine,
+    messages: promptMessages,
+    temperature: 0.3,
+    maxTokens: 1000,
+    target: "信息追问判定官",
+  });
+
+  return responseText.trim();
+}
+
+// 6. 生成可供抉择的方向性意见选项
+export async function getDecisionOptions({
+  question,
+  projectContext = "",
+  conversationHistory = [],
+  synthesisSummary = "",
+  engineConfig,
+  llmParams,
+  systemPrompts,
+}: {
+  question: string;
+  projectContext?: string;
+  conversationHistory: ChatMessage[];
+  synthesisSummary: string;
+  engineConfig?: LLMEngineConfig;
+  llmParams: LLMParamsConfig;
+  systemPrompts: SystemPromptsConfig;
+}): Promise<string[]> {
+  const activeEngine = engineConfig || getSystemEngine();
+  if (!activeEngine) {
+    throw new Error("未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！");
+  }
+
+  const systemPrompt = systemPrompts.decisionOptionsPrompt;
+  const historyMessages = formatConversationHistoryForLLM(conversationHistory);
+
+  const contextText = projectContext ? `项目背景信息：\n${projectContext}` : "";
+  const userContent = `当前会议议题：${question}\n\n${contextText}\n\n最近专家发言及主持人的总结：\n${synthesisSummary}\n\n请根据上述讨论内容，给出 2-4 个具体、可供人类决策者抉择的方向性意见/备选方案。`;
+
+  const promptMessages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+    { role: "user", content: userContent }
+  ];
+
+  const responseText = await callLLM({
+    config: activeEngine,
+    messages: promptMessages,
+    temperature: 0.5,
+    maxTokens: 1000,
+    target: "决策备选方案官",
+  });
+
+  try {
+    const rawText = responseText.trim();
+    const cleanedText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
+    const firstBracket = cleanedText.indexOf('[');
+    const lastBracket = cleanedText.lastIndexOf(']');
+    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket >= firstBracket) {
+      const jsonString = cleanedText.substring(firstBracket, lastBracket + 1);
+      const parsed = JSON.parse(jsonString);
+      if (Array.isArray(parsed)) {
+        return parsed.map(item => String(item).trim());
+      }
+    }
+  } catch (e) {
+    console.error("解析决策方案 JSON 失败，模型返回：", responseText, e);
+  }
+
+  return [
+    "方向一：维持现状，进一步观测和评估指标细节",
+    "方向二：折中改进，在局部实施优化以规避最严重风险",
+    "方向三：全面重构，按专家的最高标准建议执行"
+  ];
 }
