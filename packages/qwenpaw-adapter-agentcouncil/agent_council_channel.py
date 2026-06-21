@@ -114,6 +114,9 @@ class AgentCouncilChannel(BaseChannel):
         self.running = False
         self.listener_task: Optional[asyncio.Task] = None
         self._has_sent_think_open = {}  # 保存每个 turn_id/to_handle 是否已发送首部 <think> 的状态
+        self._prompt_cache = {}  # 缓存最终喂给大模型的最终拼装 Prompt，以便 reply.done 配合回传
+        self._has_received_message = {}  # 记录每个 turn_id 是否已接收到 message 正文流量
+
 
     @classmethod
     def from_config(cls, config: Any, process: Any = None, **kwargs: Any) -> "AgentCouncilChannel":
@@ -217,17 +220,21 @@ class AgentCouncilChannel(BaseChannel):
                 idx = content.find("<think>")
                 content = content[:idx]
             
-            lines = content.strip().split('\n')
-            formatted_lines = [f"> {line}" for line in lines]
-            blockquote = '\n'.join(formatted_lines)
-            previous_turns_text += f"【{t.get('expertName')}】发言：\n{blockquote}\n\n"
+            t_name = t.get('expertName') or "未知专家"
+            t_title = t.get('expertTitle') or "未知头衔"
+            previous_turns_text += (
+                f"┌──────────────────────────────────────────\n"
+                f"│ 参会专家发言观点：{t_name} ({t_title})\n"
+                f"└──────────────────────────────────────────\n"
+                f"{content.strip()}\n\n"
+            )
         
         if not previous_turns_text:
             previous_turns_text = "本轮中你是第一个发言的专家。"
         else:
             previous_turns_text = previous_turns_text.strip()
 
-        if external_prompt_tpl:
+        if external_prompt_tpl and external_prompt_tpl.strip():
             # 动态替换模板中的占位符
             prompt = external_prompt_tpl
             prompt = prompt.replace("{question}", question)
@@ -259,6 +266,9 @@ class AgentCouncilChannel(BaseChannel):
                 "```"
             )
 
+        # 缓存拼好的最终 Prompt
+        self._prompt_cache[turn_id] = prompt
+        
         # 封装为规范 of AgentRequest 传入引擎，对齐 QwenPaw 联合主键会话机制
         from agentscope_runtime.engine.schemas.agent_schemas import TextContent, ContentType
         content_parts = [TextContent(type=ContentType.TEXT, text=prompt)]
@@ -286,7 +296,8 @@ class AgentCouncilChannel(BaseChannel):
         accumulated_text: str = "",
     ) -> None:
         """当流式片段开始时的回调"""
-        pass
+        if stream_type == "message":
+            self._has_received_message[to_handle] = True
 
     async def on_streaming_delta(
         self,
@@ -336,6 +347,9 @@ class AgentCouncilChannel(BaseChannel):
                 }))
                 self._has_sent_think_open.pop(to_handle, None)
 
+            # 标记已接收到 message
+            self._has_received_message[to_handle] = True
+
             # 纯粹的流式透传，将正式发言的 Token 直接发给 Council 平台
             await self.ws.send(json.dumps({
                 "event": "reply.chunk",
@@ -370,18 +384,40 @@ class AgentCouncilChannel(BaseChannel):
                 }))
                 self._has_sent_think_open.pop(to_handle, None)
 
+            # 延迟 3.0s (3000ms) 检查是否接收到了 message 流量，如果未接收到，说明大模型仅输出了 think，执行兜底 done 释放
+            async def _delay_check_done():
+                await asyncio.sleep(3.0)
+                if not self._has_received_message.get(to_handle, False):
+                    raw_prompt = self._prompt_cache.pop(to_handle, "")
+                    await self.ws.send(json.dumps({
+                        "event": "reply.done",
+                        "data": {
+                            "turnId": to_handle,
+                            "expertStance": {},
+                            "rawPrompt": raw_prompt
+                        }
+                    }))
+                    self._has_received_message.pop(to_handle, None)
+                    print(f"[QwenPaw-Channel] 延迟自愈：检测到无正文流产生的 think-only 会话，已自动补发 done。轮次ID: {to_handle}")
+
+            asyncio.create_task(_delay_check_done())
+
         elif stream_type == "message":
-            # 1. 直接提取立场卡片并发送 reply.done，不再进行本地拦截释放
+            self._has_received_message[to_handle] = True
             expert_stance, _ = extract_stance_from_full_text(accumulated_text)
+            raw_prompt = self._prompt_cache.pop(to_handle, "")
 
             await self.ws.send(json.dumps({
                 "event": "reply.done",
                 "data": {
                     "turnId": to_handle,
-                    "expertStance": expert_stance
+                    "expertStance": expert_stance,
+                    "rawPrompt": raw_prompt
                 }
             }))
+            self._has_received_message.pop(to_handle, None)
             print(f"[QwenPaw-Channel] 发言完毕 (流式)，回传内容与立场摘要成功。轮次ID: {to_handle}")
+
 
     async def send(self, to_handle: str, text: str, meta: Optional[dict] = None) -> None:
         """
@@ -426,11 +462,13 @@ class AgentCouncilChannel(BaseChannel):
                     }
                 }))
 
+            raw_prompt = self._prompt_cache.pop(to_handle, "")
             await self.ws.send(json.dumps({
                 "event": "reply.done",
                 "data": {
                     "turnId": to_handle,
-                    "expertStance": expert_stance
+                    "expertStance": expert_stance,
+                    "rawPrompt": raw_prompt
                 }
             }))
             print(f"[QwenPaw-Channel] 发言完毕 (非流式)，回传内容与立场摘要成功。轮次ID: {to_handle}")

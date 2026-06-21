@@ -69,6 +69,12 @@ export type ChatMessage = TenantScoped & {
     recommendation: string;
     tradeoff: string;
   };
+  moderatorSummary?: {
+    consensus: string[];
+    disagreements: string[];
+    decisions: string[];
+    nextActions: string[];
+  };
   sources?: SourceItem[];
   createdAt: number;
 };
@@ -113,6 +119,8 @@ export type SystemPromptsConfig = TenantScoped & {
   finalConclusionUserPromptFormat: string; // 结案陈词的 User Context 拼接模板
   prevTurnsHeaderPrompt: string;           // 有历史专家发言时的前导引导语
   prevTurnsEmptyPrompt: string;            // 无历史发言（首位发言人）时的引导语
+  cleanThinkForSynthesis?: boolean;        // 主持人总结时是否清洗专家思维链（<think>块）
+  blockquoteFormatForTurns?: boolean;      // 历史发言/发言记录是否使用 Markdown 引用缩进格式（> 符号）
 };
 
 export type BusinessDefaultsConfig = TenantScoped & {

@@ -15,6 +15,8 @@
   --green-soft: #e4efe8;
   --red: #9b2f26;
   --red-soft: #fff0ec;
+  --blue: #0284c7;
+  --blue-soft: #f0f9ff;
   --shadow: 0 22px 70px rgb(25 23 20 / 10%);
   --serif: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
     "Helvetica Neue", Arial, sans-serif;
@@ -749,6 +751,15 @@ h3 {
 
 .result-grid strong {
   color: var(--amber);
+}
+
+/* 修复主持人/专家结构化卡片中标题与列表内容顶部不对齐的问题 */
+.result-grid .markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.result-grid .markdown-body > :last-child {
+  margin-bottom: 0;
 }
 
 .synthesis-card {

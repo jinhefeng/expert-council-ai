@@ -12,22 +12,121 @@ const TENANT_ID = "default-org";
 
 
 
-const InfoTooltip = ({ text }: { text: string }) => (
-  <div className="info-tooltip-container" style={{ position: "relative", display: "inline-flex", marginLeft: "6px", verticalAlign: "middle", marginBottom: "2px" }}>
-    <div style={{ cursor: "help", display: "flex", alignItems: "center", justifyContent: "center", width: "14px", height: "14px", borderRadius: "50%", border: "1px solid var(--line)", background: "transparent", color: "var(--muted-light)", fontSize: "10px", fontWeight: "bold" }}>?</div>
-    <div className="info-tooltip-text" style={{ 
-      position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%) translateY(-8px)", 
-      background: "var(--ink)", color: "var(--surface)", padding: "6px 12px", 
-      borderRadius: "6px", fontSize: "12px", whiteSpace: "nowrap", fontWeight: "normal",
-      opacity: 0, visibility: "hidden", transition: "all 0.2s ease", zIndex: 100, pointerEvents: "none", boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
-    }}>
-      {text}
-      <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", border: "5px solid transparent", borderTopColor: "var(--ink)" }} />
-    </div>
-    <style dangerouslySetInnerHTML={{__html: `
-      .info-tooltip-container:hover .info-tooltip-text { opacity: 1 !important; visibility: visible !important; transform: translateX(-50%) translateY(-4px) !important; }
-    `}} />
-  </div>
+function getHelpPlaceholders(fieldKey: keyof SystemPromptsConfig): React.ReactNode {
+  const placeholders: Record<string, string[]> = {
+    intensityLevel1: [
+      "{intensity} - 当前设定的辩论对抗强度等级数字（如 1）"
+    ],
+    intensityLevel2: [
+      "{intensity} - 当前设定的辩论对抗强度等级数字（如 2）"
+    ],
+    intensityLevel3: [
+      "{intensity} - 当前设定的辩论对抗强度等级数字（如 3）"
+    ],
+    intensityLevel4: [
+      "{intensity} - 当前设定的辩论对抗强度等级数字（如 4）"
+    ],
+    intensityLevel5: [
+      "{intensity} - 当前设定的辩论对抗强度等级数字（如 5）"
+    ],
+    expertTurnFormat: [
+      "{expertName} - 专家姓名（例如：小蔚）",
+      "{expertTitle} - 专家的核心岗位头衔（例如：资深架构师）",
+      "{lens} - 专家的专业审视视角说明",
+      "{temperament} - 专家的性格与气质风格描述",
+      "{focus} - 本轮专家的发言关注点",
+      "{systemPrompt} - 专家底层系统预设/利益立场说明",
+      "{intensityPrompt} - 计算后的当前对抗强度要求指令文本"
+    ],
+    externalAgentPrompt: [
+      "{question} - 当前人类决策者的提问或干预指令内容",
+      "{context} - 当前会议的背景描述及相关附件等上下文",
+      "{previousTurns} - 此前圆桌会议中，其他已发言专家的记录",
+      "{expertName} - 外部智能体扮演的专家角色姓名",
+      "{expertTitle} - 外部智能体扮演的专家核心岗位头衔",
+      "{userTitle} - 人类决策者的岗位/头衔名称",
+      "{userName} - 人类决策者的具体姓名"
+    ],
+    nextSpeakerPrompt: [
+      "{candidateList} - 剩余发言候选专家的列表信息（含 ID 和 姓名）"
+    ],
+    synthesisPrompt: [
+      "{moderatorName} - AI 主持人的姓名",
+      "{moderatorDesc} - AI 主持人提炼纪要的风格描述"
+    ],
+    finalConclusionPrompt: [
+      "此阶段无特定占位符。用于指示模型根据会议全程历史记录生成 Markdown 结案报告。"
+    ],
+    meetingDescPrompt: [
+      "此阶段无特定占位符。用于根据输入的会议主题自动提炼背景信息。"
+    ],
+    expertDetailsPrompt: [
+      "{expertName} - 专家角色姓名",
+      "{meetingName} - 会议名称",
+      "{meetingDesc} - 会议背景描述"
+    ],
+    expertUserPromptFormat: [
+      "{question} - 当前人类决策者的提问或干预指令内容",
+      "{context} - 当前会议的背景描述及相关附件等上下文",
+      "{previousTurns} - 此前圆桌会议中，其他已发言专家的记录",
+      "{userTitle} - 人类决策者的岗位/头衔名称",
+      "{userName} - 人类决策者的具体姓名"
+    ],
+    synthesisUserPromptFormat: [
+      "{question} - 当前会议的主题议题",
+      "{context} - 附件及背景项目说明等上下文",
+      "{expertTurns} - 本轮中各位参会专家的详细发言文字记录"
+    ],
+    nextSpeakerUserPromptFormat: [
+      "{question} - 当前会议的主题议题",
+      "{previousTurns} - 本轮中已经进行的专家发言历史记录"
+    ],
+    finalConclusionUserPromptFormat: [
+      "{context} - 圆桌会议各轮次的所有详细讨论记录（作为上下文）"
+    ],
+    prevTurnsHeaderPrompt: [
+      "此阶段无特定占位符。用于包裹历史发言记录时，放置在发言内容列表的顶部作为引导词。"
+    ],
+    prevTurnsEmptyPrompt: [
+      "此阶段无特定占位符。当本轮中尚无任何专家发言时，作为首个发言专家的引导语。"
+    ]
+  };
+
+  const list = placeholders[fieldKey] || ["暂无特定占位符变量"];
+  return list.map((item, idx) => (
+    <li key={idx} style={{ marginBottom: "4px" }}>
+      <code style={{ background: "rgba(0,0,0,0.06)", padding: "2px 4px", borderRadius: "4px", marginRight: "6px", fontFamily: "monospace" }}>{item.split(" - ")[0]}</code>: {item.split(" - ")[1] || ""}
+    </li>
+  ));
+}
+
+const CommonHelpButton = ({ title, text, onShowHelp }: { title: string; text: string; onShowHelp: (title: string, text: string) => void }) => (
+  <button
+    type="button"
+    onClick={() => onShowHelp(title, text)}
+    style={{
+      cursor: "pointer",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: "14px",
+      height: "14px",
+      borderRadius: "50%",
+      border: "1px solid var(--line)",
+      background: "transparent",
+      color: "var(--muted-light)",
+      fontSize: "10px",
+      fontWeight: "bold",
+      marginLeft: "6px",
+      verticalAlign: "middle",
+      marginBottom: "2px",
+      padding: 0,
+      outline: "none"
+    }}
+    title="查看帮助说明"
+  >
+    ?
+  </button>
 );
 
 export default function AdminPage() {
@@ -35,6 +134,7 @@ export default function AdminPage() {
 
   // 状态
   const [engineConfigs, setEngineConfigs] = useState<LLMEngineConfig[]>([]);
+  const [activeHelp, setActiveHelp] = useState<{ title: string; content: React.ReactNode } | null>(null);
   const [systemOverrides, setSystemOverrides] = useState<Partial<Expert>[]>([]);
   const [customExperts, setCustomExperts] = useState<Expert[]>([]);
   const [userProfile, setUserProfile] = useState<UserProfile>({ name: "产品经理", title: "需求提出人" });
@@ -42,6 +142,17 @@ export default function AdminPage() {
   const [systemPrompts, setSystemPrompts] = useState<SystemPromptsConfig>(DEFAULT_SYSTEM_PROMPTS);
   const [businessDefaults, setBusinessDefaults] = useState<BusinessDefaultsConfig>(DEFAULT_BUSINESS_DEFAULTS);
   
+  const showCommonHelp = (title: string, text: string) => {
+    setActiveHelp({
+      title,
+      content: (
+        <div style={{ fontSize: "13.5px", color: "var(--ink-soft)", lineHeight: "1.6", whiteSpace: "pre-wrap" }}>
+          {text}
+        </div>
+      )
+    });
+  };
+
   // 大模型表单 Modal
   const [isEngineModalOpen, setIsEngineModalOpen] = useState(false);
   const [engineDraft, setEngineDraft] = useState<LLMEngineConfig>({
@@ -102,7 +213,48 @@ export default function AdminPage() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", marginBottom: "6px", overflow: "visible" }}>
         <div style={{ display: "flex", alignItems: "center", minWidth: 0, flex: 1 }}>
           <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
-          {tooltip && <InfoTooltip text={tooltip} />}
+          {tooltip && (
+            <button
+              type="button"
+              onClick={() => setActiveHelp({ 
+                title, 
+                content: (
+                  <div>
+                    <div style={{ fontSize: "13.5px", color: "var(--ink-soft)", lineHeight: "1.6", whiteSpace: "pre-wrap" }}>
+                      {tooltip}
+                    </div>
+                    <div style={{ marginTop: "20px", borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: "16px" }}>
+                      <h4 style={{ fontSize: "12px", textTransform: "uppercase", letterSpacing: "1px", color: "var(--muted)", marginBottom: "8px", fontWeight: 600 }}>可用插槽变量说明：</h4>
+                      <ul style={{ margin: 0, paddingLeft: "18px", fontSize: "12px", color: "var(--muted)", lineHeight: "1.8" }}>
+                        {getHelpPlaceholders(fieldKey)}
+                      </ul>
+                    </div>
+                  </div>
+                )
+              })}
+              style={{
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "16px",
+                height: "16px",
+                borderRadius: "50%",
+                border: "1px solid var(--line)",
+                background: "var(--surface-subtle)",
+                color: "var(--muted)",
+                fontSize: "10px",
+                fontWeight: "bold",
+                marginLeft: "6px",
+                padding: 0,
+                outline: "none",
+                transition: "all 0.2s ease"
+              }}
+              title="查看帮助说明"
+            >
+              ?
+            </button>
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0, marginLeft: "12px", whiteSpace: "nowrap" }}>
           {isCustomized ? (
@@ -415,8 +567,8 @@ export default function AdminPage() {
 <section className="panel" style={{ padding: "24px", overflow: "visible" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
             <div>
-              <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>当前用户档案</h2>
-              <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>配置您的称呼与头衔，这将会显示在您的提问气泡上方。</p>
+              <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>人类决策者（干预人）身份预设</h2>
+              <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>配置您的称呼与头衔，这将会显示在您的干预指令提问气泡上方。</p>
             </div>
           </div>
           <form onSubmit={handleSaveUserProfile} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: "16px", alignItems: "end" }}>
@@ -429,6 +581,75 @@ export default function AdminPage() {
               <input required placeholder="如：产品经理" value={userProfile.title} onChange={e => setUserProfile({ ...userProfile, title: e.target.value })} />
             </label>
             <button type="submit" className="primary-button">保存配置</button>
+          </form>
+        </section>
+
+        <section className="panel" style={{ padding: "24px", overflow: "visible" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
+            <div>
+              <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>AI 主持人身份预设</h2>
+              <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>配置系统提炼纪要的 AI 主持人的姓名和头衔。</p>
+            </div>
+          </div>
+          <form onSubmit={handleSaveSystemPrompts} style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: "16px", alignItems: "end" }}>
+            <label className="compact-field" style={{ marginBottom: 0 }}>
+              <span style={{ marginBottom: "6px", display: "block", fontSize: "13px", fontWeight: 600 }}>主持人姓名</span>
+              <input required placeholder="如：平衡主持人" value={systemPrompts.moderatorName || ""} onChange={e => setSystemPrompts({ ...systemPrompts, moderatorName: e.target.value })} />
+            </label>
+            <label className="compact-field" style={{ marginBottom: 0 }}>
+              <span style={{ marginBottom: "6px", display: "block", fontSize: "13px", fontWeight: 600 }}>核心头衔</span>
+              <input required placeholder="如：决策协调官" value={systemPrompts.moderatorTitle || ""} onChange={e => setSystemPrompts({ ...systemPrompts, moderatorTitle: e.target.value })} />
+            </label>
+            <button type="submit" className="primary-button">保存主持人预设</button>
+          </form>
+        </section>
+
+        <section className="panel" style={{ padding: "24px", overflow: "visible" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
+            <div>
+              <h2 style={{ fontSize: "18px", margin: "0 0 4px 0" }}>发言记录与上下文配置</h2>
+              <p style={{ margin: 0, fontSize: "13px", color: "var(--muted)" }}>配置平台级历史发言拼接模式与大模型输入清洗策略。</p>
+            </div>
+          </div>
+          <form onSubmit={handleSaveSystemPrompts} style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
+              <div className="role-card" style={{ cursor: "default", padding: "16px", background: "rgba(255, 255, 255, 0.45)", borderRadius: "10px", border: "1px solid var(--line)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px" }}>
+                  <div>
+                    <h4 style={{ margin: "0 0 6px 0", fontSize: "14px", fontWeight: 700, color: "var(--ink)" }}>总结时清洗专家思维链</h4>
+                    <p style={{ margin: 0, fontSize: "12px", color: "var(--muted)", lineHeight: "1.5" }}>主持人在总结或派单时，自动清洗并物理剥除专家发言中包裹在 &lt;think&gt;...&lt;/think&gt; 中的思考推理过程。</p>
+                  </div>
+                  <label className="toggle-switch" style={{ display: "inline-flex", cursor: "pointer", userSelect: "none" }}>
+                    <input 
+                      type="checkbox" 
+                      checked={systemPrompts.cleanThinkForSynthesis !== false} 
+                      onChange={e => setSystemPrompts({ ...systemPrompts, cleanThinkForSynthesis: e.target.checked })}
+                      style={{ width: "20px", height: "20px", cursor: "pointer" }}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="role-card" style={{ cursor: "default", padding: "16px", background: "rgba(255, 255, 255, 0.45)", borderRadius: "10px", border: "1px solid var(--line)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px" }}>
+                  <div>
+                    <h4 style={{ margin: "0 0 6px 0", fontSize: "14px", fontWeight: 700, color: "var(--ink)" }}>历史发言采用引用格式</h4>
+                    <p style={{ margin: 0, fontSize: "12px", color: "var(--muted)", lineHeight: "1.5" }}>将所有拼入上下文的历史专家发言加上 &gt; Markdown 引用符号进行缩进排版，清晰划定发言边界，防范大模型注意力漂移。</p>
+                  </div>
+                  <label className="toggle-switch" style={{ display: "inline-flex", cursor: "pointer", userSelect: "none" }}>
+                    <input 
+                      type="checkbox" 
+                      checked={systemPrompts.blockquoteFormatForTurns !== false} 
+                      onChange={e => setSystemPrompts({ ...systemPrompts, blockquoteFormatForTurns: e.target.checked })}
+                      style={{ width: "20px", height: "20px", cursor: "pointer" }}
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button type="submit" className="primary-button" style={{ width: "fit-content" }}>保存配置</button>
+            </div>
           </form>
         </section>
 <section className="panel" style={{ padding: "24px", overflow: "visible" }}>
@@ -532,19 +753,19 @@ export default function AdminPage() {
           </div>
           <form onSubmit={handleSaveBusinessDefaults} style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px" }}>
             <label className="compact-field">
-              <span>默认会议名称<InfoTooltip text="新建会议时的初始名称，可随时修改" /></span>
+              <span>默认会议名称<CommonHelpButton title="默认会议名称" text="新建会议时的初始名称，可随时修改" onShowHelp={showCommonHelp} /></span>
               <input required value={businessDefaults.defaultMeetingName} onChange={e => setBusinessDefaults({ ...businessDefaults, defaultMeetingName: e.target.value })} />
             </label>
             <label className="compact-field">
-              <span>默认会议描述<InfoTooltip text="会议的初始背景说明，将作为大模型的初始上下文注入" /></span>
+              <span>默认会议描述<CommonHelpButton title="默认会议描述" text="会议的初始背景说明，将作为大模型的初始上下文注入" onShowHelp={showCommonHelp} /></span>
               <input required value={businessDefaults.defaultMeetingDesc} onChange={e => setBusinessDefaults({ ...businessDefaults, defaultMeetingDesc: e.target.value })} />
             </label>
             <label className="compact-field">
-              <span>默认全局辩论强度 (1-5)<InfoTooltip text="新建会议的初始火力值。1为极度顺从，5为毫不留情的抨击。注意：每个专家也有自己的基础强度，最终表现为两者求平均值" /></span>
+              <span>默认全局辩论强度 (1-5)<CommonHelpButton title="默认全局辩论强度 (1-5)" text="新建会议的初始火力值。1为极度顺从，5为毫不留情的抨击。注意：每个专家也有自己的基础强度，最终表现为两者求平均值" onShowHelp={showCommonHelp} /></span>
               <input type="number" min="1" max="5" required value={businessDefaults.defaultDebateIntensity} onChange={e => setBusinessDefaults({ ...businessDefaults, defaultDebateIntensity: parseInt(e.target.value) })} />
             </label>
             <label className="compact-field">
-              <span>默认流转模式<InfoTooltip text="【顺序发言】：轮流排队发言\n【智能派单】：大模型根据上下文自动挑选下一个最适合反驳/补充的专家\n【手动点名】：用户自己选择谁来回答" /></span>
+              <span>默认流转模式<CommonHelpButton title="默认流转模式" text="【顺序发言】：轮流排队发言\n【智能派单】：大模型根据上下文自动挑选下一个最适合反驳/补充的专家\n【手动点名】：用户自己选择谁来回答" onShowHelp={showCommonHelp} /></span>
               <select required value={businessDefaults.defaultTurnOrderMode} onChange={e => setBusinessDefaults({ ...businessDefaults, defaultTurnOrderMode: e.target.value as any })}>
                 <option value="sequential">顺序发言</option>
                 <option value="relevance">智能相关度派单</option>
@@ -563,23 +784,23 @@ export default function AdminPage() {
           </div>
           <form onSubmit={handleSaveLlmParams} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
             <label className="compact-field">
-              <span>Max Tokens (最大生成长度)<InfoTooltip text="单次大模型调用最多允许生成的字数（Token数）。值越大，专家能长篇大论，但响应更慢、成本更高" /></span>
+              <span>Max Tokens (最大生成长度)<CommonHelpButton title="Max Tokens (最大生成长度)" text="单次大模型调用最多允许生成的字数（Token数）。值越大，专家能长篇大论，但响应更慢、成本更高" onShowHelp={showCommonHelp} /></span>
               <input type="number" required value={llmParams.maxTokens} onChange={e => setLlmParams({ ...llmParams, maxTokens: parseInt(e.target.value) })} />
             </label>
             <label className="compact-field">
-              <span>专家发言 Temperature (0-2)<InfoTooltip text="控制专家观点发散程度。较高值(如0.7-0.9)可带来更具创意的观点，但过高可能胡言乱语；较低值(如0.3)则更严谨保守" /></span>
+              <span>专家发言 Temperature (0-2)<CommonHelpButton title="专家发言 Temperature" text="控制专家观点发散程度。较高值(如0.7-0.9)可带来更具创意的观点，但过高可能胡言乱语；较低值(如0.3)则更严谨保守" onShowHelp={showCommonHelp} /></span>
               <input type="number" step="0.1" required value={llmParams.expertTemperature} onChange={e => setLlmParams({ ...llmParams, expertTemperature: parseFloat(e.target.value) })} />
             </label>
             <label className="compact-field">
-              <span>主持人总结 Temperature (0-2)<InfoTooltip text="控制纪要提炼的严谨度。建议保持较低(0.3)，确保总结准确无误，不随意捏造共识" /></span>
+              <span>主持人总结 Temperature (0-2)<CommonHelpButton title="主持人总结 Temperature" text="控制纪要提炼的严谨度。建议保持较低(0.3)，确保总结准确无误，不随意捏造共识" onShowHelp={showCommonHelp} /></span>
               <input type="number" step="0.1" required value={llmParams.synthesisTemperature} onChange={e => setLlmParams({ ...llmParams, synthesisTemperature: parseFloat(e.target.value) })} />
             </label>
             <label className="compact-field">
-              <span>最终结论 Temperature (0-2)<InfoTooltip text="控制最终结案陈词的发挥空间。建议较低以保证高度结构化" /></span>
+              <span>最终结论 Temperature (0-2)<CommonHelpButton title="最终结论 Temperature" text="控制最终结案陈词的发挥空间。建议较低以保证高度结构化" onShowHelp={showCommonHelp} /></span>
               <input type="number" step="0.1" required value={llmParams.conclusionTemperature} onChange={e => setLlmParams({ ...llmParams, conclusionTemperature: parseFloat(e.target.value) })} />
             </label>
             <label className="compact-field">
-              <span>智能派单 Temperature (0-2)<InfoTooltip text="大模型决定下一个发言人时的参数。建议极低(0.1)，保证其选人的逻辑稳定性" /></span>
+              <span>智能派单 Temperature (0-2)<CommonHelpButton title="智能派单 Temperature" text="大模型决定下一个发言人时的参数。建议极低(0.1)，保证其选人的逻辑稳定性" onShowHelp={showCommonHelp} /></span>
               <input type="number" step="0.1" required value={llmParams.nextSpeakerTemperature} onChange={e => setLlmParams({ ...llmParams, nextSpeakerTemperature: parseFloat(e.target.value) })} />
             </label>
             <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>
@@ -681,9 +902,33 @@ export default function AdminPage() {
                 <PromptLabelHeader 
                   title="外部智能体发言提示词模板" 
                   fieldKey="externalAgentPrompt" 
-                  tooltip="下发给外部大模型或小龙虾客户端的提示词模板。支持占位符：&#10;• {question} - 圆桌会议当前新议题&#10;• {context} - 项目背景及相关附件内容&#10;• {previousTurns} - 本轮截止目前的其他专家发言记录&#10;• {expertName} - 专家角色姓名"
+                  tooltip="下发给外部大模型或小龙虾客户端的提示词模板。支持占位符：&#10;• {question} - 圆桌会议当前新议题&#10;• {context} - 项目背景及相关附件内容&#10;• {previousTurns} - 本轮截止目前的其他专家发言记录&#10;• {expertName} - 专家角色姓名&#10;• {expertTitle} - 专家角色头衔&#10;• {userTitle} - 人类决策者头衔&#10;• {userName} - 人类决策者姓名"
                 />
                 <textarea style={{ minHeight: "150px", fontFamily: "monospace" }} required value={systemPrompts.externalAgentPrompt || ""} onChange={e => setSystemPrompts({ ...systemPrompts, externalAgentPrompt: e.target.value })} />
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader 
+                  title="专家发言 User Context 拼接模板" 
+                  fieldKey="expertUserPromptFormat" 
+                  tooltip="调用专家发言大模型时拼接 User 引导词的模板。支持占位符：&#10;• {question} - 圆桌当前新议题&#10;• {context} - 项目背景及相关附件&#10;• {previousTurns} - 本轮讨论已发言历史&#10;• {userTitle} - 人类决策者头衔&#10;• {userName} - 人类决策者姓名"
+                />
+                <textarea style={{ minHeight: "120px", fontFamily: "monospace" }} required value={systemPrompts.expertUserPromptFormat || ""} onChange={e => setSystemPrompts({ ...systemPrompts, expertUserPromptFormat: e.target.value })} />
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader 
+                  title="历史发言前导引导语" 
+                  fieldKey="prevTurnsHeaderPrompt" 
+                  tooltip="有此前已发言专家记录时的前导话术引导词。无特定替换占位符"
+                />
+                <textarea style={{ minHeight: "60px", fontFamily: "monospace" }} required value={systemPrompts.prevTurnsHeaderPrompt || ""} onChange={e => setSystemPrompts({ ...systemPrompts, prevTurnsHeaderPrompt: e.target.value })} />
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader 
+                  title="历史发言空时引导语" 
+                  fieldKey="prevTurnsEmptyPrompt" 
+                  tooltip="本轮讨论尚未有任何专家发言时的首位发言引导语。无特定替换占位符"
+                />
+                <textarea style={{ minHeight: "60px", fontFamily: "monospace" }} required value={systemPrompts.prevTurnsEmptyPrompt || ""} onChange={e => setSystemPrompts({ ...systemPrompts, prevTurnsEmptyPrompt: e.target.value })} />
               </div>
             </div>
 
@@ -694,8 +939,24 @@ export default function AdminPage() {
                 <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.nextSpeakerPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, nextSpeakerPrompt: e.target.value })} />
               </div>
               <div className="compact-field">
+                <PromptLabelHeader 
+                  title="智能派单 User Context 拼接模板" 
+                  fieldKey="nextSpeakerUserPromptFormat" 
+                  tooltip="调用智能选人调度官选人时，拼装 User 引导词的模板。支持占位符：&#10;• {question} - 圆桌当前新议题&#10;• {previousTurns} - 本轮已发言历史"
+                />
+                <textarea style={{ minHeight: "80px", fontFamily: "monospace" }} required value={systemPrompts.nextSpeakerUserPromptFormat || ""} onChange={e => setSystemPrompts({ ...systemPrompts, nextSpeakerUserPromptFormat: e.target.value })} />
+              </div>
+              <div className="compact-field">
                 <PromptLabelHeader title="主持人提炼纪要指令" fieldKey="synthesisPrompt" tooltip="用于提炼本次讨论的综合共识与最终决策。支持占位符：• {moderatorName} - 主持人名字，• {moderatorDesc} - 主持人风格描述" />
                 <textarea style={{ minHeight: "150px", fontFamily: "monospace" }} required value={systemPrompts.synthesisPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, synthesisPrompt: e.target.value })} />
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader 
+                  title="主持人提炼 User Context 拼接模板" 
+                  fieldKey="synthesisUserPromptFormat" 
+                  tooltip="提炼纪要时拼装 User 引导词的模板。支持占位符：&#10;• {question} - 圆桌当前议题&#10;• {context} - 项目背景及附件上下文&#10;• {expertTurns} - 本轮已发言记录"
+                />
+                <textarea style={{ minHeight: "100px", fontFamily: "monospace" }} required value={systemPrompts.synthesisUserPromptFormat || ""} onChange={e => setSystemPrompts({ ...systemPrompts, synthesisUserPromptFormat: e.target.value })} />
               </div>
             </div>
 
@@ -704,6 +965,14 @@ export default function AdminPage() {
               <div className="compact-field">
                 <PromptLabelHeader title="最终结论生成指令" fieldKey="finalConclusionPrompt" tooltip="当全部轮次结束后，根据完整的历史记录生成 Markdown 结案陈词。无特定替换占位符" />
                 <textarea style={{ minHeight: "100px", fontFamily: "monospace" }} required value={systemPrompts.finalConclusionPrompt} onChange={e => setSystemPrompts({ ...systemPrompts, finalConclusionPrompt: e.target.value })} />
+              </div>
+              <div className="compact-field">
+                <PromptLabelHeader 
+                  title="结案陈词 User Context 拼接模板" 
+                  fieldKey="finalConclusionUserPromptFormat" 
+                  tooltip="生成结案陈词时拼接 User 引导词的模板。支持占位符：&#10;• {context} - 会议全程专家发言文字的完整历史记录"
+                />
+                <textarea style={{ minHeight: "100px", fontFamily: "monospace" }} required value={systemPrompts.finalConclusionUserPromptFormat || ""} onChange={e => setSystemPrompts({ ...systemPrompts, finalConclusionUserPromptFormat: e.target.value })} />
               </div>
             </div>
 
@@ -888,6 +1157,72 @@ export default function AdminPage() {
               <div className="modal-actions" style={{ padding: "16px 0 24px 0" }}>
                 <button type="button" className="ghost-button" onClick={() => setConfirmConfig(prev => ({ ...prev, isOpen: false }))}>取消</button>
                 <button type="button" className="primary-button" style={{ background: "var(--red)", borderColor: "var(--red)", color: "white" }} onClick={confirmConfig.onConfirm}>确定执行</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* 磨砂 HelpModal */}
+      {activeHelp && (
+        <div 
+          className="modal-backdrop" 
+          style={{ 
+            zIndex: 9999,
+            backdropFilter: "blur(12px)", 
+            WebkitBackdropFilter: "blur(12px)", 
+            background: "rgba(0, 0, 0, 0.4)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center"
+          }} 
+          onClick={() => setActiveHelp(null)}
+        >
+          <section 
+            className="modal-card" 
+            style={{ 
+              width: "550px", 
+              background: "rgba(255, 255, 255, 0.75)", 
+              backdropFilter: "blur(20px)",
+              WebkitBackdropFilter: "blur(20px)",
+              border: "1px solid rgba(255, 255, 255, 0.4)",
+              boxShadow: "0 20px 40px rgba(0,0,0,0.15)",
+              borderRadius: "16px",
+              padding: "0"
+            }} 
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header" style={{ borderBottom: "1px solid rgba(0,0,0,0.06)", padding: "20px 24px" }}>
+              <div>
+                <p className="eyebrow" style={{ color: "var(--muted)", margin: 0, fontSize: "11px", textTransform: "uppercase", letterSpacing: "1px" }}>配置帮助指南 / Prompt Help</p>
+                <h2 style={{ fontSize: "18px", color: "var(--ink)", fontWeight: 700, margin: "4px 0 0 0" }}>{activeHelp.title}</h2>
+              </div>
+              <button 
+                className="icon-button" 
+                type="button" 
+                onClick={() => setActiveHelp(null)} 
+                style={{ 
+                  background: "transparent", 
+                  border: "none", 
+                  cursor: "pointer",
+                  padding: "4px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "var(--muted)"
+                }}
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+            <div style={{ padding: "24px" }}>
+              {activeHelp.content}
+
+              <div className="modal-actions" style={{ padding: "24px 0 0 0", borderTop: "none", display: "flex", justifyContent: "flex-end" }}>
+                <button type="button" className="primary-button" style={{ width: "100%", height: "40px", borderRadius: "8px", fontSize: "13px", fontWeight: 600 }} onClick={() => setActiveHelp(null)}>我知道了</button>
               </div>
             </div>
           </section>

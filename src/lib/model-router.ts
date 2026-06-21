@@ -1,6 +1,7 @@
 import { Expert, LLMEngineConfig, ChatMessage, LLMParamsConfig, SystemPromptsConfig } from "./types";
 import { moderatorModes } from "./experts";
-import { extractAndCleanJson } from "./content-parser";
+import { extractAndCleanJson, cleanAndParseJson } from "./content-parser";
+import { PromptLogService } from "./prompt-log-service";
 
 // 从本地环境变量自动生成系统默认引擎
 export function getSystemEngine(): LLMEngineConfig | null {
@@ -39,11 +40,13 @@ export async function callLLM({
   messages,
   temperature = 0.5,
   maxTokens = 4000,
+  target = "通用模型API",
 }: {
   config: LLMEngineConfig;
   messages: { role: "system" | "user" | "assistant"; content: string }[];
   temperature?: number;
   maxTokens?: number;
+  target?: string;
 }): Promise<string> {
   const baseUrl = config.baseUrl || "https://api.openai.com/v1";
   const apiKey = config.apiKey;
@@ -66,6 +69,23 @@ export async function callLLM({
         max_tokens: maxTokens ?? 4000,
         ...(config.isReasoningModel ? {} : { temperature }),
       };
+
+      if (retryCount === 0) {
+        try {
+          const systemPrompt = messages.find(m => m.role === "system")?.content || "";
+          const userPrompt = [...messages].reverse().find(m => m.role === "user")?.content || "";
+          PromptLogService.addLog({
+            type: "api_sync",
+            target,
+            modelOrToken: config.model,
+            systemPrompt,
+            userPrompt,
+            rawRequestPayload: payload
+          });
+        } catch (e) {
+          console.error("[PromptLog] 记录日志失败:", e);
+        }
+      }
 
       if (process.env.NODE_ENV === 'development') {
         console.log(`\n========== [LLM Request (Sync): ${model}] ==========`);
@@ -138,11 +158,13 @@ export async function callLLMStream({
   messages,
   temperature = 0.5,
   maxTokens = 4000,
+  target = "通用模型API",
 }: {
   config: LLMEngineConfig;
   messages: { role: "system" | "user" | "assistant"; content: string }[];
   temperature?: number;
   maxTokens?: number;
+  target?: string;
 }): Promise<Response> {
   const baseUrl = config.baseUrl || "https://api.openai.com/v1";
   const apiKey = config.apiKey;
@@ -161,6 +183,21 @@ export async function callLLMStream({
 
   if (!config.isReasoningModel) {
     payload.temperature = temperature;
+  }
+
+  try {
+    const systemPrompt = messages.find(m => m.role === "system")?.content || "";
+    const userPrompt = [...messages].reverse().find(m => m.role === "user")?.content || "";
+    PromptLogService.addLog({
+      type: "api_stream",
+      target,
+      modelOrToken: config.model,
+      systemPrompt,
+      userPrompt,
+      rawRequestPayload: payload
+    });
+  } catch (e) {
+    console.error("[PromptLog] 记录日志失败:", e);
   }
 
   if (process.env.NODE_ENV === 'development') {
@@ -237,13 +274,16 @@ function formatPreviousTurns(
   previousTurns: { expertName: string; expertTitle?: string; content: string }[],
   headerPrompt: string,
   emptyPrompt: string,
+  blockquoteFormat = true,
 ): string {
   if (!previousTurns.length) return emptyPrompt;
   const formatted = previousTurns.map((turn) => {
     const cleaned = (turn.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    const blockquote = cleaned.split("\n").map(line => `> ${line}`).join("\n");
+    const formattedContent = blockquoteFormat
+      ? cleaned.split("\n").map(line => `> ${line}`).join("\n")
+      : cleaned;
     const title = turn.expertTitle ? ` (${turn.expertTitle})` : "";
-    return `【${turn.expertName}${title}】发言：\n${blockquote}`;
+    return `【${turn.expertName}${title}】发言：\n${formattedContent}`;
   }).join("\n\n");
   return `${headerPrompt}\n${formatted}`;
 }
@@ -316,16 +356,21 @@ export async function getExpertTurn({
     previousTurns,
     systemPrompts.prevTurnsHeaderPrompt ?? "本轮专家讨论中，此前已发言记录：",
     systemPrompts.prevTurnsEmptyPrompt ?? "本轮中你是第一个发言的专家。",
+    systemPrompts.blockquoteFormatForTurns !== false,
   );
 
   const contextText = projectContext ? `项目背景及附件信息：\n${projectContext}` : "";
 
-  const currentUserTurnText = (systemPrompts.expertUserPromptFormat ?? "【来自人类决策者（{userTitle} {userName}）的现场干预与最新指令】：\n{question}\n\n{context}\n\n{previousTurns}\n\n请针对人类决策者的指令表达你的专业视角发言：")
+  let currentUserTurnText = (systemPrompts.expertUserPromptFormat ?? "【来自人类决策者（{userTitle} {userName}）的现场干预与最新指令】：\n{question}\n\n{context}\n\n{previousTurns}\n\n请针对人类决策者的指令表达你的专业视角发言：")
     .replace(/{userTitle}/g, userTitle)
     .replace(/{userName}/g, userName)
     .replace(/{question}/g, question)
     .replace(/{context}/g, contextText)
     .replace(/{previousTurns}/g, currentTurnPreviousText);
+
+  if (!previousTurns || previousTurns.length === 0) {
+    currentUserTurnText += "\n\n【特别指示】当前你是本轮讨论中第一个发言的专家，请只代表自己发表意见。严禁在发言开头或内容中扮演、续写或虚构其他角色（如主持人等），亦不要输出任何其他角色的前缀（如“【主持人】：”）。直接开始你个人的专业陈述即可。";
+  }
 
   promptMessages.push({ role: "user", content: currentUserTurnText });
 
@@ -334,8 +379,9 @@ export async function getExpertTurn({
     messages: promptMessages,
     temperature: llmParams.expertTemperature,
     maxTokens: llmParams.maxTokens,
+    target: expert.name,
   });
-  return extractAndCleanJson(responseText, expert.name);
+  return extractAndCleanJson(responseText, expert.name, expert.title);
 }
 
 // 1.5 专家发言流式接口
@@ -398,16 +444,21 @@ export async function getExpertTurnStream({
     previousTurns,
     systemPrompts.prevTurnsHeaderPrompt ?? "本轮专家讨论中，此前已发言记录：",
     systemPrompts.prevTurnsEmptyPrompt ?? "本轮中你是第一个发言的专家。",
+    systemPrompts.blockquoteFormatForTurns !== false,
   );
 
   const contextText = projectContext ? `项目背景及附件信息：\n${projectContext}` : "";
 
-  const currentUserTurnText = (systemPrompts.expertUserPromptFormat ?? "【来自人类决策者（{userTitle} {userName}）的现场干预与最新指令】：\n{question}\n\n{context}\n\n{previousTurns}\n\n请针对人类决策者的指令表达你的专业视角发言：")
+  let currentUserTurnText = (systemPrompts.expertUserPromptFormat ?? "【来自人类决策者（{userTitle} {userName}）的现场干预与最新指令】：\n{question}\n\n{context}\n\n{previousTurns}\n\n请针对人类决策者的指令表达你的专业视角发言：")
     .replace(/{userTitle}/g, userTitle)
     .replace(/{userName}/g, userName)
     .replace(/{question}/g, question)
     .replace(/{context}/g, contextText)
     .replace(/{previousTurns}/g, currentTurnPreviousText);
+
+  if (!previousTurns || previousTurns.length === 0) {
+    currentUserTurnText += "\n\n【特别指示】当前你是本轮讨论中第一个发言的专家，请只代表自己发表意见。严禁在发言开头或内容中扮演、续写或虚构其他角色（如主持人等），亦不要输出任何其他角色的前缀（如“【主持人】：”）。直接开始你个人的专业陈述即可。";
+  }
 
   promptMessages.push({ role: "user", content: currentUserTurnText });
 
@@ -416,6 +467,7 @@ export async function getExpertTurnStream({
     messages: promptMessages,
     temperature: llmParams.expertTemperature,
     maxTokens: llmParams.maxTokens,
+    target: expert.name,
   });
 }
 
@@ -472,7 +524,24 @@ export async function getSynthesis({
     ...historyMessages,
   ];
 
-  const expertTurnsText = expertRounds.map((round) => `【${round.expertName}】：${round.content}`).join("\n\n");
+  const cleanThink = systemPrompts.cleanThinkForSynthesis !== false;
+  const blockquoteFormat = systemPrompts.blockquoteFormatForTurns !== false;
+
+  const expertTurnsText = expertRounds.map((round) => {
+    let content = round.content ?? "";
+    if (cleanThink) {
+      content = content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+      const thinkIdx = content.indexOf("<think>");
+      if (thinkIdx !== -1) {
+        content = content.substring(0, thinkIdx).trim();
+      }
+    }
+    let formattedContent = content.trim();
+    if (blockquoteFormat) {
+      formattedContent = formattedContent.split("\n").map(line => `> ${line}`).join("\n");
+    }
+    return `【${round.expertName}】发言：\n${formattedContent}`;
+  }).join("\n\n");
   const contextText = projectContext ? `项目背景：\n${projectContext}` : "";
   const userTitle = userProfile?.title || "首席决策官";
   const userName = userProfile?.name || "主持人";
@@ -491,12 +560,13 @@ export async function getSynthesis({
     messages: promptMessages,
     temperature: llmParams.synthesisTemperature,
     maxTokens: llmParams.maxTokens,
+    target: `主持人: ${moderatorName}`,
   });
 
   try {
     const jsonMatch = responseText.match(/({[\s\S]*?})/);
     if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[1]);
+      const parsed = cleanAndParseJson<any>(jsonMatch[1]);
       if (parsed && typeof parsed === "object" && "summary" in parsed) {
         return parsed;
       }
@@ -578,6 +648,7 @@ export async function getNextSpeaker({
     messages: promptMessages,
     temperature: llmParams.nextSpeakerTemperature,
     maxTokens: llmParams.maxTokens,
+    target: "智能派单调度官",
   });
 
   const cleanedId = chosenId.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
@@ -629,6 +700,7 @@ export async function getFinalConclusion({
     messages: promptMessages,
     temperature: llmParams.conclusionTemperature,
     maxTokens: llmParams.maxTokens,
+    target: "最终结论提炼官",
   });
 
   return responseText.trim();

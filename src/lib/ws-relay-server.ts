@@ -1,4 +1,5 @@
 import { Expert } from "./types";
+import { PromptLogService, compileExternalAgentPrompt } from "./prompt-log-service";
 
 declare global {
   var wsRelayServer: any;
@@ -6,6 +7,7 @@ declare global {
   var wsRelayBotConnections: Map<string, any>;
   var wsRelayFrontendConnections: Set<any>;
   var wsRelayLastSentTurnIndices: Map<string, number>;
+  var wsRelayTurnBuffers: Map<string, any>;
   var consoleOverridden: boolean;
   var originalLog: (...args: any[]) => void;
   var originalError: (...args: any[]) => void;
@@ -64,6 +66,8 @@ if (typeof window === "undefined") {
     private registeredTokens = new Map<string, string>();
     private frontendConnections: Set<any>;
     private lastSentTurnIndices: Map<string, number>;
+    // turnId 粒度的发言缓冲：用于精准匹配上下文压缩周期 (多租户安全结构体缓存)
+    private turnBuffers: Map<string, any>;
 
     constructor() {
       if (!global.wsRelayBotConnections) {
@@ -75,10 +79,14 @@ if (typeof window === "undefined") {
       if (!global.wsRelayLastSentTurnIndices) {
         global.wsRelayLastSentTurnIndices = new Map<string, number>();
       }
+      if (!global.wsRelayTurnBuffers || !(global.wsRelayTurnBuffers instanceof Map)) {
+        global.wsRelayTurnBuffers = new Map<string, any>();
+      }
 
       this.botConnections = global.wsRelayBotConnections;
       this.frontendConnections = global.wsRelayFrontendConnections;
       this.lastSentTurnIndices = global.wsRelayLastSentTurnIndices;
+      this.turnBuffers = global.wsRelayTurnBuffers;
 
       this.handoverExistingConnections();
 
@@ -244,21 +252,108 @@ if (typeof window === "undefined") {
     }
 
     private handleBotMessage(ws: any, token: string, message: string) {
+      // 惰性防御性属性补录：防范热重载引起的 constructor 未执行
+      if (!this.turnBuffers) {
+        this.turnBuffers = global.wsRelayTurnBuffers || new Map<string, any>();
+      }
+
+      // 内存垃圾回收 (GC)：清理超过 5 分钟（300,000 毫秒）未更新的僵尸缓冲，确保高并发多租户环境下无内存泄露
+      const now = Date.now();
+      this.turnBuffers.forEach((item, key) => {
+        if (item && now - item.updatedAt > 300000) {
+          this.turnBuffers.delete(key);
+          console.log(`[WS-Relay] [GC] Cleaned zombie buffer for turnId=${key} due to TTL timeout.`);
+        }
+      });
+
       const expertId = this.registeredTokens.get(token) || "Unknown Expert";
       try {
         const payload = JSON.parse(message);
         this.logPayload(`[WS-Relay] [${this.instanceId}] Received CLP payload from bot "${expertId}" (Token: ${token.substring(0, 8)}...)`, payload);
 
         if (payload.event === "reply.thought" || payload.event === "reply.chunk" || payload.event === "reply.done") {
-          const frontendPayload = {
-            type: payload.event === "reply.done" ? "stream_done" : "stream_chunk",
-            expertId: this.registeredTokens.get(token) || "unknown",
-            chunk: payload.data?.chunk || "",
-            isThought: payload.event === "reply.thought",
-            turnId: payload.data?.turnId,
-            expertStance: payload.data?.expertStance
-          };
-          this.broadcastToFrontend(frontendPayload);
+          const resolvedExpertId = this.registeredTokens.get(token) || "unknown";
+          const turnId = payload.data?.turnId || "";
+
+          if (payload.event === "reply.done") {
+            const bufferItem = turnId ? this.turnBuffers.get(turnId) : null;
+            const fullText = bufferItem?.text || "";
+            const isCompactionDone = fullText.toLowerCase().includes("context compaction");
+
+            if (isCompactionDone) {
+              console.log(`[WS-Relay] [${this.instanceId}] Compaction done detected for turnId=${turnId}. Intercepting done and broadcasting stream_compaction_pending.`);
+              this.broadcastToFrontend({
+                type: "stream_compaction_pending",
+                expertId: resolvedExpertId,
+                turnId,
+                chunk: "🔄 正在整理上下文记忆中..."
+              });
+              if (turnId) {
+                // 重置缓冲以备后续接收真正发言 (保存 expertId 和最新时间戳)
+                this.turnBuffers.set(turnId, {
+                  expertId: resolvedExpertId,
+                  text: "",
+                  updatedAt: Date.now()
+                });
+              }
+            } else {
+              console.log(`[WS-Relay] [${this.instanceId}] Real reply done for turnId=${turnId}. Broadcasting stream_done.`);
+              if (turnId) {
+                this.turnBuffers.delete(turnId);
+              }
+              this.broadcastToFrontend({
+                type: "stream_done",
+                expertId: resolvedExpertId,
+                chunk: payload.data?.chunk || "",
+                isThought: false,
+                turnId,
+                expertStance: payload.data?.expertStance
+              });
+            }
+          } else {
+            // reply.chunk 或 reply.thought
+            const chunk = payload.data?.chunk || "";
+            let isCompactingFlow = false;
+
+            if (turnId && payload.event === "reply.chunk") {
+              const bufferItem = this.turnBuffers.get(turnId);
+              const currentText = bufferItem?.text || "";
+              const nextText = currentText + chunk;
+
+              this.turnBuffers.set(turnId, {
+                expertId: resolvedExpertId,
+                text: nextText,
+                updatedAt: Date.now()
+              });
+
+              // 检查该流式片段或当前累积内容是否为上下文压缩相关日志
+              const lowerText = nextText.toLowerCase();
+              if (lowerText.includes("context compaction") || lowerText.includes("正在整理上下文")) {
+                isCompactingFlow = true;
+              }
+            }
+
+            if (isCompactingFlow) {
+              // 属于上下文压缩流量：静默拦截，只向下发等待通知以消除前端闪现现象
+              this.broadcastToFrontend({
+                type: "stream_compaction_pending",
+                expertId: resolvedExpertId,
+                turnId,
+                chunk: "🔄 正在整理上下文记忆中..."
+              });
+              return; // 直接拦截返回，不广播给前端作为普通消息内容
+            }
+
+            const chunkPayload = {
+              type: "stream_chunk" as const,
+              expertId: resolvedExpertId,
+              chunk,
+              isThought: payload.event === "reply.thought",
+              turnId,
+              expertStance: payload.data?.expertStance
+            };
+            this.broadcastToFrontend(chunkPayload);
+          }
         }
       } catch (e) {
         console.error(`[WS-Relay] [${this.instanceId}] Error processing bot message:`, e);
@@ -271,6 +366,26 @@ if (typeof window === "undefined") {
         const expertId = this.registeredTokens.get(token) || "Unknown Expert";
         console.log(`[WS-Relay] [${this.instanceId}] Bot disconnected for expert "${expertId}"`);
         this.broadcastBotStatus();
+
+        // 惰性属性防御绑定
+        if (!this.turnBuffers) {
+          this.turnBuffers = global.wsRelayTurnBuffers || new Map<string, any>();
+        }
+
+        // 物理断连 GC：清除该 Bot 之前留在内存中的所有挂起发言缓冲，强健防泄露
+        this.turnBuffers.forEach((item, key) => {
+          if (item && item.expertId === expertId) {
+            this.turnBuffers.delete(key);
+            console.log(`[WS-Relay] [GC] Physically cleaned pending buffer for turnId=${key} due to Bot disconnection.`);
+          }
+        });
+
+        // 当机器人意外断开连接时，主动通知前端当前专家的发言已经中断，触发前端发言的自愈与异常防护
+        this.broadcastToFrontend({
+          type: "stream_error",
+          expertId,
+          error: "智能体连接意外断开，发言已中断"
+        });
       }
     }
 
@@ -370,7 +485,7 @@ if (typeof window === "undefined") {
           context: payload.context,
           expertName: payload.expertName || "未知专家",
           expertTitle: payload.expertTitle || "未知头衔",
-          previousTurns: previousTurns,
+          previousTurns: isIncremental ? previousTurns.slice(lastIndex) : previousTurns,
           isIncremental,
           externalAgentPrompt: payload.externalAgentPrompt || "",
           userTitle: payload.userTitle || "首席决策官",
@@ -379,6 +494,22 @@ if (typeof window === "undefined") {
       };
 
       this.logPayload(`[WS-Relay] [${this.instanceId}] Outgoing CLP payload to expert "${expertId}" for turn ${payload.turnId} (isIncremental: ${isIncremental})`, clpEvent);
+
+      try {
+        const compiledPrompt = compileExternalAgentPrompt(clpEvent.data);
+        void this.sendLogToMainServer({
+          id: `log-req-${expertId}-${payload.turnId}`,
+          type: "external_bot",
+          target: `外部专家: ${payload.expertName || expertId}`,
+          modelOrToken: targetToken ? targetToken.substring(0, Math.min(12, targetToken.length)) + "..." : "Unknown Token",
+          botRequestPayload: compiledPrompt,
+          systemPrompt: "传给外部智能体小龙虾的系统指令模版与拼接内容",
+          userPrompt: compiledPrompt,
+          rawPayload: clpEvent.data
+        });
+      } catch (e) {
+        console.error("[PromptLog] 记录外部机器人日志失败:", e);
+      }
 
       botWs.send(JSON.stringify(clpEvent));
       console.log(`[WS-Relay] [${this.instanceId}] Successfully triggered turn for bot: ${expertId} (isIncremental: ${isIncremental})`);
@@ -411,11 +542,50 @@ if (typeof window === "undefined") {
         }
       });
     }
+
+    private async sendLogToMainServer(log: any) {
+      try {
+        // 1. 内存直存双保险
+        PromptLogService.addLog(log);
+      } catch (e) {
+        console.log("[WS-Relay] 写入内存日志提示 (非致命错误，可能是多进程隔离):", e);
+      }
+
+      try {
+        // 2. HTTP 降级推送
+        const port = process.env.PORT || "3000";
+        const response = await fetch(`http://127.0.0.1:${port}/api/prompt-logs`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(log)
+        });
+        if (!response.ok) {
+          console.log(`[WS-Relay] 向主站发送日志提示: ${response.statusText} (可能是多进程隔离)`);
+        }
+      } catch (e) {
+        // 忽略报错，在内存直存已保底的情况下，网络隔离时降级不输出错误，仅 debug 级别记录
+      }
+    }
+
+    public hotReload() {
+      console.log(`[WS-Relay] [${this.instanceId}] Performing hot reload and connection handover...`);
+      if (!this.turnBuffers) {
+        this.turnBuffers = global.wsRelayTurnBuffers || new Map<string, any>();
+      }
+      this.handoverExistingConnections();
+    }
   }
 
   // 闭包函数，用于实例化局部作用域内的 WSRelayServer 类
   createServerInstance = () => {
-    if (!global.wsRelayServer) {
+    if (global.wsRelayServer) {
+      // 动态接管原型，平滑替换为最新代码的逻辑，并重新绑定已有连接的监听器
+      Object.setPrototypeOf(global.wsRelayServer, WSRelayServer.prototype);
+      global.wsRelayServer.hotReload();
+      console.log(`[WS-Relay] Successfully upgraded wsRelayServer instance prototype to latest.`);
+    } else {
       global.wsRelayServer = new WSRelayServer();
     }
     return global.wsRelayServer;
