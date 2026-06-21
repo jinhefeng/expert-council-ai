@@ -148,7 +148,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
         systemPrompt: initialData?.systemPrompt || "",
         debateIntensity: initialData?.debateIntensity || 3,
         focus: initialData?.focus || [],
-        isCustom: initialData?.isCustom ?? true,
+        isCustom: initialData?.isCustom ?? (initialData?.id ? false : true),
         isExternalAgent: initialData?.isExternalAgent ?? false,
         agentType: initialData?.agentType || "openclaw",
         botToken: initialData?.botToken || "",

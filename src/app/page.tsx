@@ -323,7 +323,10 @@ export default function Home() {
   const allExperts = useMemo(() => {
     // 过滤出系统专家、全局级专家(!meetingId) 以及当前会议专属专家
     const availableCustom = customExperts.filter(e => !e.meetingId || e.meetingId === activeMeetingId);
-    return [...systemExperts, ...availableCustom];
+    // 防御性排重：当自定义专家ID与内置专家重复时以内置（含覆写）专家为准，防止 React Key 重复警告
+    const systemIds = new Set(systemExperts.map(e => e.id));
+    const uniqueCustom = availableCustom.filter(e => !systemIds.has(e.id));
+    return [...systemExperts, ...uniqueCustom];
   }, [systemExperts, customExperts, activeMeetingId]);
 
   const activeMeeting = useMemo(() => {

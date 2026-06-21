@@ -466,7 +466,7 @@ export default function AdminPage() {
     setExpertModalMode("edit");
     if (!expert.isCustom) {
       const override = systemOverrides.find(o => o.id === expert.id);
-      setExpertDraft({ ...expert, ...override });
+      setExpertDraft({ ...expert, ...override, isCustom: false });
     } else {
       setExpertDraft({ ...expert });
     }
@@ -535,7 +535,9 @@ export default function AdminPage() {
 
   // 聚合当前显示的所有专家（过滤被软删除的系统专家）
   const visibleSystemExperts = systemExperts.filter(e => !e.isHidden);
-  const allVisibleExperts = [...visibleSystemExperts, ...customExperts];
+  const systemIds = new Set(visibleSystemExperts.map(e => e.id));
+  const uniqueCustom = customExperts.filter(e => !systemIds.has(e.id));
+  const allVisibleExperts = [...visibleSystemExperts, ...uniqueCustom];
 
   return (
     <main className="app-shell" style={{ display: "block", height: "100vh", overflowY: "auto" }}>
