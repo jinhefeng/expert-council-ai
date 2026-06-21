@@ -300,6 +300,8 @@ export async function getExpertTurn({
   llmParams,
   systemPrompts,
   userProfile,
+  meetingName,
+  meetingDesc,
 }: {
   question: string;
   projectContext?: string;
@@ -311,6 +313,8 @@ export async function getExpertTurn({
   llmParams: LLMParamsConfig;
   systemPrompts: SystemPromptsConfig;
   userProfile?: { name: string; title: string };
+  meetingName?: string;
+  meetingDesc?: string;
 }): Promise<{
   content: string;
   expertStance: {
@@ -343,7 +347,9 @@ export async function getExpertTurn({
     .replace(/{systemPrompt}/g, expert.systemPrompt || "")
     .replace(/{intensityPrompt}/g, intensityPrompt)
     .replace(/{userTitle}/g, userTitle)
-    .replace(/{userName}/g, userName);
+    .replace(/{userName}/g, userName)
+    .replace(/{meetingName}/g, meetingName || "未知会议")
+    .replace(/{meetingDesc}/g, meetingDesc || "暂无背景描述");
 
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
 
@@ -396,6 +402,8 @@ export async function getExpertTurnStream({
   llmParams,
   systemPrompts,
   userProfile,
+  meetingName,
+  meetingDesc,
 }: {
   question: string;
   projectContext?: string;
@@ -407,6 +415,8 @@ export async function getExpertTurnStream({
   llmParams: LLMParamsConfig;
   systemPrompts: SystemPromptsConfig;
   userProfile?: { name: string; title: string };
+  meetingName?: string;
+  meetingDesc?: string;
 }): Promise<Response> {
   const activeEngine = engineConfig || getSystemEngine();
 
@@ -431,7 +441,9 @@ export async function getExpertTurnStream({
     .replace(/{systemPrompt}/g, expert.systemPrompt || "")
     .replace(/{intensityPrompt}/g, intensityPrompt)
     .replace(/{userTitle}/g, userTitle)
-    .replace(/{userName}/g, userName);
+    .replace(/{userName}/g, userName)
+    .replace(/{meetingName}/g, meetingName || "未知会议")
+    .replace(/{meetingDesc}/g, meetingDesc || "暂无背景描述");
 
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
 

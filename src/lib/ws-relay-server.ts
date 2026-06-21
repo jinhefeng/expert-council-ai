@@ -489,7 +489,9 @@ if (typeof window === "undefined") {
           isIncremental,
           externalAgentPrompt: payload.externalAgentPrompt || "",
           userTitle: payload.userTitle || "首席决策官",
-          userName: payload.userName || "主持人"
+          userName: payload.userName || "主持人",
+          meetingName: payload.meetingName || "未知会议",
+          meetingDesc: payload.meetingDesc || "暂无背景描述"
         }
       };
 

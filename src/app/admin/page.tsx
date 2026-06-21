@@ -36,7 +36,9 @@ function getHelpPlaceholders(fieldKey: keyof SystemPromptsConfig): React.ReactNo
       "{temperament} - 专家的性格与气质风格描述",
       "{focus} - 本轮专家的发言关注点",
       "{systemPrompt} - 专家底层系统预设/利益立场说明",
-      "{intensityPrompt} - 计算后的当前对抗强度要求指令文本"
+      "{intensityPrompt} - 计算后的当前对抗强度要求指令文本",
+      "{meetingName} - 圆桌会议名称",
+      "{meetingDesc} - 圆桌会议描述"
     ],
     externalAgentPrompt: [
       "{question} - 当前人类决策者的提问或干预指令内容",
@@ -45,7 +47,9 @@ function getHelpPlaceholders(fieldKey: keyof SystemPromptsConfig): React.ReactNo
       "{expertName} - 外部智能体扮演的专家角色姓名",
       "{expertTitle} - 外部智能体扮演的专家核心岗位头衔",
       "{userTitle} - 人类决策者的岗位/头衔名称",
-      "{userName} - 人类决策者的具体姓名"
+      "{userName} - 人类决策者的具体姓名",
+      "{meetingName} - 圆桌会议名称",
+      "{meetingDesc} - 圆桌会议描述"
     ],
     nextSpeakerPrompt: [
       "{candidateList} - 剩余发言候选专家的列表信息（含 ID 和 姓名）"
@@ -1154,7 +1158,7 @@ export default function AdminPage() {
                       <PromptLabelHeader 
                         title="专家发言框架格式要求" 
                         fieldKey="expertTurnFormat" 
-                        tooltip="本字段是核心的发言模板。支持以下花括号占位符：&#10;• {expertName} - 专家姓名&#10;• {lens} - 专业审视视角&#10;• {temperament} - 专家性格与气质&#10;• {focus} - 本轮关注的重点&#10;• {systemPrompt} - 专家底层的利益立场系统预设&#10;• {intensityPrompt} - 计算出的发言激烈对抗强度要求"
+                        tooltip="本字段是核心的发言模板。支持以下花括号占位符：&#10;• {expertName} - 专家姓名&#10;• {lens} - 专业审视视角&#10;• {temperament} - 专家性格与气质&#10;• {focus} - 本轮关注的重点&#10;• {systemPrompt} - 专家底层的利益立场系统预设&#10;• {intensityPrompt} - 计算出的发言激烈对抗强度要求&#10;• {meetingName} - 会议名称&#10;• {meetingDesc} - 会议背景描述"
                       />
                       <textarea style={{ minHeight: "120px", fontFamily: "monospace" }} required value={systemPrompts.expertTurnFormat} onChange={e => setSystemPrompts({ ...systemPrompts, expertTurnFormat: e.target.value })} />
                     </div>
@@ -1163,7 +1167,7 @@ export default function AdminPage() {
                       <PromptLabelHeader 
                         title="外部智能体发言提示词模板" 
                         fieldKey="externalAgentPrompt" 
-                        tooltip="下发给外部大模型或小龙虾客户端的提示词模板。支持占位符：&#10;• {question} - 圆桌会议当前新议题&#10;• {context} - 项目背景及相关附件内容&#10;• {previousTurns} - 本轮截止目前的其他专家发言记录&#10;• {expertName} - 专家角色姓名&#10;• {expertTitle} - 专家角色头衔&#10;• {userTitle} - 人类决策者头衔&#10;• {userName} - 人类决策者姓名"
+                        tooltip="下发给外部大模型或小龙虾客户端的提示词模板。支持占位符：&#10;• {question} - 圆桌会议当前新议题&#10;• {context} - 项目背景及相关附件内容&#10;• {previousTurns} - 本轮截止目前的其他专家发言记录&#10;• {expertName} - 专家角色姓名&#10;• {expertTitle} - 专家角色头衔&#10;• {userTitle} - 人类决策者头衔&#10;• {userName} - 人类决策者姓名&#10;• {meetingName} - 会议名称&#10;• {meetingDesc} - 会议背景描述"
                       />
                       <textarea style={{ minHeight: "150px", fontFamily: "monospace" }} required value={systemPrompts.externalAgentPrompt || ""} onChange={e => setSystemPrompts({ ...systemPrompts, externalAgentPrompt: e.target.value })} />
                     </div>

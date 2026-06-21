@@ -1018,6 +1018,8 @@ export default function Home() {
             externalAgentPrompt: systemPrompts?.externalAgentPrompt || "",
             userTitle: userProfile.title,
             userName: userProfile.name,
+            meetingName: meeting.name,
+            meetingDesc: meeting.description,
             turnId
           }));
         } else {
@@ -1043,6 +1045,8 @@ export default function Home() {
         llmParams,
         systemPrompts,
         userProfile,
+        meetingName: meeting.name,
+        meetingDesc: meeting.description,
       }),
       signal,
     });
@@ -1256,8 +1260,7 @@ export default function Home() {
 
     // 获取参会的专家
     const selectedExperts = allExperts.filter(e => targetMeeting.expertIds.includes(e.id));
-    const meetingContextStr = `会议名称：${targetMeeting.name}\n会议背景与描述：${targetMeeting.description}`;
-    const contextStr = [meetingContextStr, projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
+    const contextStr = [projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
     // 本轮发言缓冲
     const previousTurns: { expertName: string; expertTitle?: string; content: string }[] = [];

@@ -14,6 +14,12 @@
 
 ## ⏳ 当前迭代 (Current Sprint / Active)
 ### IN-PROGRESS
+- [x] (2026-06-21) 🔮 架构重构：基于通用人设与议题自适应推导的系统级智能体定义方式优化 (已完成，100% 静态编译通过，去设计化人设与去重隔离及会议背景感知升级 ✅)
+  * [x] 1. 泛化内置默认专家的 `lens`、`focus` 和 `systemPrompt`，剥离“评审该方案”等强绑定界面设计的局限性词汇。
+  * [x] 2. 升级系统提示词模板（`expertTurnFormat`、`externalAgentPrompt` 和 `expertDetailsPrompt`），引入 `{meetingName}` 与 `{meetingDesc}` 会议主题感知占位符。
+  * [x] 3. 升级 `model-router.ts` 和 `ws-relay-server.ts` 中的占位符动态拼接逻辑，在系统提示词组装时实时注入会议名称与描述。
+  * [x] 4. 在 `ExpertModal.tsx`（智能体设置弹窗）中优化字段指引说明，引导用户配置“跨议题通用”的专家视角与利益立场。
+
 - [x] (2026-06-21) 🎨 体验优化：后台管理页面 UI/UX 体验重构与垂直页签式（Sidebar Tabs）极简信息架构升级 (已验证通过，Tab 切换顺畅，提示词按阶段子 Tab 折叠良好，聚焦发光与 Hover 动效加固 ✅)
   * [x] 1. 在 `admin/page.tsx` 主体区重构为左侧垂直页签导航、右侧条件内容展示的两栏式信息布局，整合身份预设与全局默认值。
   * [x] 2. 在提示词模板管理页签中设计“子页签 (Sub-tabs)”分区展示，将 14 个大提示词框按会议流阶段进行分组展示以减少视觉压迫。

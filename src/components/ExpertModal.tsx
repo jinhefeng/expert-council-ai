@@ -360,7 +360,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                 </div>
 
                 <label className="compact-field">
-                  <span>审视该议题的专业视角 (Lens) *<InfoTooltip text="给大模型的强制要求：该专家必须从哪个专门的角度来评估会议议题？" /></span>
+                  <span>通用专业审视视角 (Lens) *<InfoTooltip text="当面对不同会议议题时，该角色习惯从哪个专门的专业角度进行剖析？（例如：系统架构稳定性、终端用户使用旅程等，请使用通用且不局限于特定设计方案的表述）" /></span>
                   <input required placeholder="说明该智能体着重关注哪些点" value={draft.lens || ""} onChange={e => setDraft({ ...draft, lens: e.target.value })} />
                 </label>
 
@@ -370,7 +370,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                 </label>
 
                 <label className="compact-field">
-                  <span>核心关注指标 (Focus)<InfoTooltip text="该智能体最关心的几个业务指标 or 评估维度，请用英文逗号分隔" /></span>
+                  <span>通用关注重点 (Focus)<InfoTooltip text="该角色看问题时最聚焦的几个核心维度，请用英文逗号分隔（例如：交付效能, 系统解耦, 开发成本等）" /></span>
                   <input
                     placeholder="如：转化率, 用户留存, 获客成本"
                     value={draft.focus?.join(", ") || ""}
@@ -378,7 +378,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                   />
                 </label>
                 <label className="compact-field">
-                  <span>底层人设提示词 (System Prompt) *<InfoTooltip text="这部分将作为 System Role 完整注入大模型" /></span>
+                  <span>底层人设提示词 (System Prompt) *<InfoTooltip text="大模型的底层价值观设定。请重点陈述该专家的核心利益偏好、价值观底线以及看问题的底层利益立场（作为 System Role 完整注入，请使用跨议题通用的表述）" /></span>
                   <textarea
                     required
                     placeholder="可以填入该智能体专属的完整 System Setting。"

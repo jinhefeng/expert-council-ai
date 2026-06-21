@@ -102,6 +102,8 @@ export function compileExternalAgentPrompt(data: any): string {
     prompt = prompt.replace(/{expertTitle}/g, expertTitle);
     prompt = prompt.replace(/{userTitle}/g, userTitle);
     prompt = prompt.replace(/{userName}/g, userName);
+    prompt = prompt.replace(/{meetingName}/g, data.meetingName || "未知会议");
+    prompt = prompt.replace(/{meetingDesc}/g, data.meetingDesc || "暂无背景描述");
     return prompt;
   } else {
     let prompt = 

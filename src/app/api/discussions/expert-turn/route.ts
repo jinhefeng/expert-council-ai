@@ -14,6 +14,8 @@ export async function POST(request: Request) {
       llmParams,
       systemPrompts,
       userProfile,
+      meetingName,
+      meetingDesc,
     } = body;
 
     if (!question || !expert) {
@@ -32,6 +34,8 @@ export async function POST(request: Request) {
         llmParams,
         systemPrompts,
         userProfile,
+        meetingName,
+        meetingDesc,
       });
       return responseStream;
     } else {
@@ -46,6 +50,8 @@ export async function POST(request: Request) {
         llmParams,
         systemPrompts,
         userProfile,
+        meetingName,
+        meetingDesc,
       });
 
       return Response.json(result);
