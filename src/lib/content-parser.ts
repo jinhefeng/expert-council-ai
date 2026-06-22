@@ -71,6 +71,7 @@ export function extractAndCleanJson(rawText: string, expertName: string, expertT
   let searchPos = text.length;
 
   while (true) {
+    if (searchPos <= 0) break;
     const braceIdx = text.lastIndexOf("{", searchPos - 1);
     if (braceIdx === -1) break;
 
@@ -299,6 +300,7 @@ export function cleanStreamingJson(text: string): string {
   let searchPos = text.length;
 
   while (true) {
+    if (searchPos <= 0) break;
     const braceIdx = text.lastIndexOf("{", searchPos - 1);
     if (braceIdx === -1) break;
 

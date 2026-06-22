@@ -863,15 +863,16 @@ export async function getDecisionOptions({
   conversationHistory: ChatMessage[];
   synthesisSummary: string;
   engineConfig?: LLMEngineConfig;
-  llmParams: LLMParamsConfig;
-  systemPrompts: SystemPromptsConfig;
+  llmParams?: LLMParamsConfig;
+  systemPrompts?: SystemPromptsConfig;
 }): Promise<string[]> {
   const activeEngine = engineConfig || getSystemEngine();
   if (!activeEngine) {
     throw new Error("未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！");
   }
 
-  const systemPrompt = systemPrompts.decisionOptionsPrompt;
+  const DEFAULT_DECISION_PROMPT = "你是一位专业的决策分析师。请根据当前讨论情况，以 JSON 数组格式输出 2-4 个具体、可供人类决策者抉择的方向性意见/备选方案。";
+  const systemPrompt = systemPrompts?.decisionOptionsPrompt || DEFAULT_DECISION_PROMPT;
   const historyMessages = formatConversationHistoryForLLM(conversationHistory);
 
   const contextText = projectContext ? `项目背景信息：\n${projectContext}` : "";

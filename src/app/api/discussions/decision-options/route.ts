@@ -23,12 +23,13 @@ export async function POST(request: Request) {
       conversationHistory: conversationHistory || [],
       synthesisSummary,
       engineConfig,
-      llmParams,
-      systemPrompts,
+      llmParams: llmParams || undefined,
+      systemPrompts: systemPrompts || undefined,
     });
 
     return Response.json({ options });
   } catch (error) {
+    console.error("[decision-options] 决策选项生成失败:", error);
     const message = error instanceof Error ? error.message : "Failed to generate decision options.";
     return Response.json({ error: message }, { status: 500 });
   }

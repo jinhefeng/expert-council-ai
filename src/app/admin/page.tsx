@@ -909,11 +909,11 @@ export default function AdminPage() {
                     <input type="number" min="1" max="5" required value={businessDefaults.defaultDebateIntensity} onChange={e => setBusinessDefaults({ ...businessDefaults, defaultDebateIntensity: parseInt(e.target.value) })} />
                   </label>
                   <label className="compact-field">
-                    <span>默认流转模式<CommonHelpButton title="默认流转模式" text="【顺序发言】：轮流排队发言\n【智能派单】：大模型根据上下文自动挑选下一个最适合反驳/补充的专家\n【手动点名】：用户自己选择谁来回答" onShowHelp={showCommonHelp} /></span>
+                    <span>默认流转模式<CommonHelpButton title="默认流转模式" text="【顺序发言】：轮流排队发言\n【动态指派】：大模型根据上下文自动挑选下一个最适合反驳/补充的专家\n【点名发言】：用户自己选择谁来回答" onShowHelp={showCommonHelp} /></span>
                     <select required value={businessDefaults.defaultTurnOrderMode} onChange={e => setBusinessDefaults({ ...businessDefaults, defaultTurnOrderMode: e.target.value as any })}>
                       <option value="sequential">顺序发言</option>
-                      <option value="relevance">智能相关度派单</option>
-                      <option value="manual">手动点名</option>
+                      <option value="relevance">动态指派</option>
+                      <option value="manual">点名发言</option>
                     </select>
                   </label>
                   <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>

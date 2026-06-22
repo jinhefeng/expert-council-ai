@@ -377,6 +377,8 @@ export default function Home() {
     return meetings.find(m => m.id === activeMeetingId);
   }, [meetings, activeMeetingId]);
 
+  const isSessionActive = activeMeetingId ? (!!discussingMeetings[activeMeetingId] || !!generatingConclusions[activeMeetingId]) : false;
+
   // 自主决策倒计时定时器管理
   useEffect(() => {
     if (steeringConsoleMeetingId && activeMeeting && activeMeeting.moderatorAutonomy === "autonomous") {
@@ -420,6 +422,16 @@ export default function Home() {
       }
     };
   }, [steeringConsoleMeetingId, activeMeeting?.id, activeMeeting?.moderatorAutonomy, meetingDecisionOptions, llmParams?.autonomousCountdownSeconds]);
+
+  // 决策面板滚动对齐：面板渲染后自动滚到可视区顶部
+  useEffect(() => {
+    if (steeringConsoleMeetingId && activeMeeting && steeringConsoleMeetingId === activeMeeting.id) {
+      const timer = setTimeout(() => {
+        document.getElementById("steering-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [steeringConsoleMeetingId, activeMeeting?.id]);
 
 
   const sortedMeetings = useMemo(() => {
@@ -1411,6 +1423,10 @@ export default function Home() {
     synthesisSummary: string,
     signal: AbortSignal
   ): Promise<{ options: string[] }> {
+    // 防御性校验：若 llmParams / systemPrompts 还未加载，使用后端默认值
+    const safeLlmParams = llmParams ?? undefined;
+    const safeSystemPrompts = systemPrompts ?? undefined;
+
     const response = await fetch("/api/discussions/decision-options", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1420,8 +1436,8 @@ export default function Home() {
         conversationHistory: history,
         synthesisSummary,
         engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
-        llmParams,
-        systemPrompts,
+        llmParams: safeLlmParams,
+        systemPrompts: safeSystemPrompts,
       }),
       signal,
     });
@@ -1552,12 +1568,13 @@ export default function Home() {
         setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
         
         const modMessageId = `msg-${Date.now()}-mod`;
+        const currentModMode = moderatorModes.find(m => m.id === currentMeeting.moderatorId) || moderatorModes[0];
         let modMessage: ChatMessage = {
           id: modMessageId,
           meetingId: targetMeetingId,
           tenantId: TENANT_ID,
           role: "moderator",
-          senderName: systemPrompts?.moderatorName || "主持人",
+          senderName: systemPrompts?.moderatorName || currentModMode.name || "主持人",
           senderTitle: systemPrompts?.moderatorTitle || "决策协调官",
           content: "",
           createdAt: Date.now(),
@@ -1815,12 +1832,13 @@ export default function Home() {
         setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
 
         const modMessageId = `msg-${Date.now()}-mod`;
+        const currentModMode = moderatorModes.find(m => m.id === currentMeeting.moderatorId) || moderatorModes[0];
         let modMessage: ChatMessage = {
           id: modMessageId,
           meetingId: currentMeeting.id,
           tenantId: TENANT_ID,
           role: "moderator",
-          senderName: systemPrompts?.moderatorName || "主持人",
+          senderName: systemPrompts?.moderatorName || currentModMode.name || "主持人",
           senderTitle: systemPrompts?.moderatorTitle || "决策协调官",
           content: "",
           createdAt: Date.now(),
@@ -1932,15 +1950,17 @@ export default function Home() {
 
         // 保存到状态中供 UI 渲染
         setMeetingDecisionOptions(prev => ({ ...prev, [targetMeetingId]: generatedOptions }));
+        // 默认预选第一项（推荐选项），方便用户快速决策 & 自主模式展示主持人的选择
+        if (generatedOptions.length > 0) {
+          setSelectedDecisionOption(generatedOptions[0]);
+        }
 
         // 2. 分模式挂起或自动推进
         // 2. 分模式挂起并等待抉择（促进与自主均展示面板以提供倒计时 and 鼠标移入干预）
         if (autonomy === "facilitative" || autonomy === "autonomous") {
           setSteeringConsoleMeetingId(targetMeetingId);
           setSteeringPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
-          setTimeout(() => {
-            document.getElementById("steering-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
-          }, 150);
+          // scrollIntoView 由 useEffect 中的监听器负责（更可靠）
 
           try {
             const action = await new Promise<{
@@ -1962,14 +1982,14 @@ export default function Home() {
             if (action.type === "choose" && action.opinion) {
               const selectedOpinion = action.opinion.trim();
 
-              // 创建一笔选择决策气泡上屏，保持会议脉络清晰
               const isAuto = !!action.isAuto;
+              const currentModMode = moderatorModes.find(m => m.id === currentMeeting.moderatorId) || moderatorModes[0];
               const decisionChoiceMsg: ChatMessage = {
                 id: `msg-${Date.now()}-decision-choice`,
                 meetingId: targetMeetingId,
                 tenantId: TENANT_ID,
                 role: "user",
-                senderName: isAuto ? (systemPrompts?.moderatorName || "主持人") : userProfile.name,
+                senderName: isAuto ? (systemPrompts?.moderatorName || currentModMode.name || "主持人") : userProfile.name,
                 senderTitle: isAuto ? (systemPrompts?.moderatorTitle || "决策协调官") : `${userProfile.title}(决议选择)`,
                 content: isAuto
                   ? `💡 【主持人自主选定了下一步论证方向】：\n> **${selectedOpinion}**`
@@ -2957,7 +2977,7 @@ export default function Home() {
 
                                 {displayContent && (
                                   <div className="message-hover-wrapper" style={{ display: "flex", alignItems: "flex-end", justifyContent: isUser ? "flex-end" : "flex-start", gap: "8px" }}>
-                                    {isUser && (
+                                    {isUser && !isSessionActive && (
                                       <button
                                         className="message-edit-btn"
                                         onClick={() => {
@@ -3175,7 +3195,8 @@ export default function Home() {
                   border: "1px dashed var(--amber)",
                   background: "rgba(251, 191, 36, 0.05)",
                   backdropFilter: "blur(20px)",
-                  boxShadow: "0 8px 32px rgba(25, 23, 20, 0.04)"
+                  boxShadow: "0 8px 32px rgba(25, 23, 20, 0.04)",
+                  scrollMarginTop: "24px"
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
@@ -3366,13 +3387,13 @@ export default function Home() {
                 margin: "20px 18px",
                 padding: "24px",
                 borderRadius: "16px",
-                border: "1px dashed var(--blue)",
-                background: "rgba(59, 130, 246, 0.05)",
+                border: "1px dashed var(--amber)",
+                background: "rgba(251, 191, 36, 0.05)",
                 backdropFilter: "blur(20px)",
                 boxShadow: "0 8px 32px rgba(25, 23, 20, 0.04)"
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
-                  <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "var(--blue)", boxShadow: "0 0 10px var(--blue)" }} />
+                  <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "var(--amber)", boxShadow: "0 0 10px var(--amber)" }} />
                   <h4 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "var(--ink)" }}>
                     信息澄清控制台：启动前置信息补充校验
                   </h4>
@@ -3434,8 +3455,8 @@ export default function Home() {
                     style={{
                       fontSize: "12.5px",
                       padding: "8px 20px",
-                      background: "var(--blue)",
-                      borderColor: "var(--blue)"
+                      background: "var(--amber)",
+                      borderColor: "var(--amber)"
                     }}
                   >
                     提交数据并继续判定
@@ -3599,124 +3620,119 @@ export default function Home() {
 
                   {/* 内嵌的会议设置项 (胶囊控制台方案) */}
                   {activeMeeting && (
-                    <div style={{ display: "flex", gap: "8px", padding: "4px 8px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "8px", alignItems: "center" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>主持</span>
-                        <select
-                          className="toolbar-select"
-                          value={activeMeeting.moderatorId}
-                          onChange={(e) => void updateActiveMeeting({ moderatorId: e.target.value })}
-                          title="主持风格"
-                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
-                        >
-                          {moderatorModes.map(m => (
-                            <option key={m.id} value={m.id}>{m.name}</option>
-                          ))}
-                        </select>
-                      </div>
+                    <div style={{ display: "flex", gap: "6px", padding: "4px 8px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                      {/* 主持 + 风格/机制/模式 三联下拉 */}
+                      <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>主持</span>
+                      <select
+                        className="toolbar-select select-moderator"
+                        value={activeMeeting.moderatorId}
+                        onChange={(e) => void updateActiveMeeting({ moderatorId: e.target.value })}
+                        disabled={isSessionActive}
+                        title="主持风格"
+                        style={{ cursor: isSessionActive ? "not-allowed" : "pointer", opacity: isSessionActive ? 0.5 : 1 }}
+                      >
+                        {moderatorModes.map(m => (
+                          <option key={m.id} value={m.id}>{m.name}</option>
+                        ))}
+                      </select>
+                      <select 
+                        className="toolbar-select select-moderator"
+                        value={activeMeeting.turnOrderMode}
+                        onChange={(e) => void updateActiveMeeting({ turnOrderMode: e.target.value as any })}
+                        disabled={isSessionActive}
+                        title="发言机制"
+                        style={{ cursor: isSessionActive ? "not-allowed" : "pointer", opacity: isSessionActive ? 0.5 : 1 }}
+                      >
+                        <option value="sequential">顺序发言</option>
+                        <option value="relevance">动态指派</option>
+                        <option value="manual">点名发言</option>
+                      </select>
+                      <select 
+                        className="toolbar-select select-moderator"
+                        value={activeMeeting.moderatorAutonomy || "facilitative"}
+                        onChange={(e) => {
+                          const nextAutonomy = e.target.value as any;
+                          const updates: Partial<Meeting> = { moderatorAutonomy: nextAutonomy };
+                          if (nextAutonomy === "autonomous") {
+                            updates.enableInquiryLoop = false;
+                          }
+                          void updateActiveMeeting(updates);
+                        }}
+                        disabled={isSessionActive}
+                        title="主持模式"
+                        style={{ cursor: isSessionActive ? "not-allowed" : "pointer", opacity: isSessionActive ? 0.5 : 1 }}
+                      >
+                        <option value="passive">被动传统</option>
+                        <option value="facilitative">协调引导</option>
+                        <option value="autonomous">自主决策</option>
+                      </select>
 
                       <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
 
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>机制</span>
+                      {/* 追问 */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>追问</span>
                         <select 
-                          className="toolbar-select"
-                          value={activeMeeting.turnOrderMode}
-                          onChange={(e) => void updateActiveMeeting({ turnOrderMode: e.target.value as any })}
-                          title="发言顺序"
-                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
-                        >
-                          <option value="sequential">顺序发言</option>
-                          <option value="relevance">动态指派</option>
-                          <option value="manual">手动点名</option>
-                        </select>
-                      </div>
-
-                      <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
-
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>火力</span>
-                        <select
-                          className="toolbar-select"
-                          value={activeMeeting.globalDebateIntensity}
-                          onChange={(e) => void updateActiveMeeting({ globalDebateIntensity: Number(e.target.value) })}
-                          title="对抗强度"
-                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
-                        >
-                          <option value="1">1 (温和)</option>
-                          <option value="2">2 (建设)</option>
-                          <option value="3">3 (客观)</option>
-                          <option value="4">4 (尖锐)</option>
-                          <option value="5">5 (极限)</option>
-                        </select>
-                      </div>
-
-                      <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
-                      
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>引擎</span>
-                        <select 
-                          className="toolbar-select" 
-                          value={activeEngineId} 
-                          onChange={(e) => void handleSelectEngine(e.target.value)}
-                          title="选择模型引擎"
-                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
-                        >
-                          <option value="system-env">系统内置</option>
-                          {engineConfigs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
-                      </div>
-
-                      <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
-
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>主持模式</span>
-                        <select 
-                          className="toolbar-select"
-                          value={activeMeeting.moderatorAutonomy || "facilitative"}
-                          onChange={(e) => {
-                            const nextAutonomy = e.target.value as any;
-                            const updates: Partial<Meeting> = { moderatorAutonomy: nextAutonomy };
-                            if (nextAutonomy === "autonomous") {
-                              updates.enableInquiryLoop = false;
-                            }
-                            void updateActiveMeeting(updates);
-                          }}
-                          title="主持人自主度"
-                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
-                        >
-                          <option value="passive">被动传统</option>
-                          <option value="facilitative">协调引导</option>
-                          <option value="autonomous">自主决策</option>
-                        </select>
-                      </div>
-
-                      <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
-
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>信息追问</span>
-                        <select 
-                          className="toolbar-select"
+                          className="toolbar-select select-inquiry"
                           value={activeMeeting.moderatorAutonomy === "autonomous" ? "false" : (activeMeeting.enableInquiryLoop ? "true" : "false")}
                           onChange={(e) => void updateActiveMeeting({ enableInquiryLoop: e.target.value === "true" })}
-                          disabled={activeMeeting.moderatorAutonomy === "autonomous"}
-                          title="追问索取信息环"
-                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)", opacity: activeMeeting.moderatorAutonomy === "autonomous" ? 0.5 : 1 }}
+                          disabled={activeMeeting.moderatorAutonomy === "autonomous" || isSessionActive}
+                          title="信息追问开关"
+                          style={{ cursor: (activeMeeting.moderatorAutonomy === "autonomous" || isSessionActive) ? "not-allowed" : "pointer", opacity: (activeMeeting.moderatorAutonomy === "autonomous" || isSessionActive) ? 0.5 : 1 }}
                         >
                           <option value="true">开启</option>
                           <option value="false">关闭</option>
                         </select>
                       </div>
 
-                      {/* 结论触发按钮（集成在控制台最右侧） */}
+                      <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
+
+                      {/* 火力 */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>火力</span>
+                        <select
+                          className="toolbar-select select-intensity"
+                          value={activeMeeting.globalDebateIntensity}
+                          onChange={(e) => void updateActiveMeeting({ globalDebateIntensity: Number(e.target.value) })}
+                          disabled={isSessionActive}
+                          title="对抗强度"
+                          style={{ cursor: isSessionActive ? "not-allowed" : "pointer", opacity: isSessionActive ? 0.5 : 1 }}
+                        >
+                          <option value="1">1</option>
+                          <option value="2">2</option>
+                          <option value="3">3</option>
+                          <option value="4">4</option>
+                          <option value="5">5</option>
+                        </select>
+                      </div>
+
+                      <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
+
+                      {/* 引擎 */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>引擎</span>
+                        <select 
+                          className="toolbar-select select-engine" 
+                          value={activeEngineId} 
+                          onChange={(e) => void handleSelectEngine(e.target.value)}
+                          disabled={isSessionActive}
+                          title="选择模型引擎"
+                          style={{ cursor: isSessionActive ? "not-allowed" : "pointer", opacity: isSessionActive ? 0.5 : 1 }}
+                        >
+                          <option value="system-env">系统内置</option>
+                          {engineConfigs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                      </div>
+
+                      {/* 提炼结论按钮 */}
                       {activeMeeting && activeMeeting.messages.length > 2 && (!activeMeeting.finalConclusion || unlockedComposers[activeMeetingId]) && (
                         <>
-                          <div style={{ width: "1px", height: "12px", background: "var(--line)", marginLeft: "4px" }} />
+                          <div style={{ width: "1px", height: "12px", background: "var(--line)", marginLeft: "auto" }} />
                           <button
                             type="button"
                             className="ghost-button"
                             onClick={() => void handleGenerateConclusion()}
-                            disabled={generatingConclusions[activeMeetingId]}
+                            disabled={generatingConclusions[activeMeetingId] || isSessionActive}
                             style={{ 
                               fontSize: "12px", 
                               padding: "2px 8px", 
@@ -3727,7 +3743,8 @@ export default function Home() {
                               display: "flex", 
                               alignItems: "center", 
                               gap: "4px",
-                              opacity: generatingConclusions[activeMeetingId] ? 0.5 : 1
+                              opacity: (generatingConclusions[activeMeetingId] || isSessionActive) ? 0.5 : 1,
+                              cursor: (generatingConclusions[activeMeetingId] || isSessionActive) ? "not-allowed" : "pointer"
                             }}
                             title={activeMeeting.finalConclusion ? "更新最终结论" : "提炼最终结论"}
                           >
@@ -3828,8 +3845,8 @@ export default function Home() {
                   <span>流转模式</span>
                   <select required value={newMeetingDraft.turnOrderMode || "sequential"} onChange={e => setNewMeetingDraft({...newMeetingDraft, turnOrderMode: e.target.value as any})}>
                     <option value="sequential">顺序发言</option>
-                    <option value="relevance">智能相关度派单</option>
-                    <option value="manual">手动点名</option>
+                    <option value="relevance">动态指派</option>
+                    <option value="manual">点名发言</option>
                   </select>
                 </label>
                 <label className="compact-field">
