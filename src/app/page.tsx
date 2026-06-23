@@ -16,8 +16,9 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { experts as defaultExperts, moderatorModes, mergeSystemExperts } from "@/lib/experts";
 import { ExpertModal } from "@/components/ExpertModal";
+import ChatMessageCard from "@/components/ChatMessageCard";
 import { LocalStorageService } from "@/lib/storage-service";
-import { extractAndCleanJson, cleanStreamingJson, cleanAndParseJson, beautifyListFormatting } from "@/lib/content-parser";
+import { extractAndCleanJson, cleanStreamingJson, cleanAndParseJson, beautifyListFormatting, extractInquiryPrompt } from "@/lib/content-parser";
 import {
   Expert,
   LLMEngineConfig,
@@ -96,7 +97,7 @@ export default function Home() {
   const wsRef = useRef<WebSocket | null>(null);
   const wsResolversRef = useRef<Record<string, {
     text: string;
-    onChunk?: (text: string) => void;
+    onChunk?: (text: string, isExtracting?: boolean) => void;
     resolve: (res: { content: string; expertStance: any }) => void;
     reject: (err: Error) => void;
   }>>({});
@@ -238,6 +239,7 @@ export default function Home() {
   const isAutoScrollEnabled = useRef<boolean>(true);
 
   const meetingsRef = useRef<Meeting[]>([]);
+  const lastScrollTimeRef = useRef<number>(0);
   useEffect(() => {
     meetingsRef.current = meetings;
   }, [meetings]);
@@ -509,9 +511,13 @@ export default function Home() {
                 resolver.text += message.chunk;
                 if (resolver.onChunk) {
                   if (message.isThought) {
-                    resolver.onChunk(resolver.text);
+                    resolver.onChunk(resolver.text, false);
                   } else {
-                    resolver.onChunk(cleanStreamingJson(resolver.text));
+                    const cleaned = cleanStreamingJson(resolver.text);
+                    const isExtracting = (resolver.text.includes("<think>") && !resolver.text.includes("</think>"))
+                      ? false
+                      : cleaned.length < resolver.text.trim().length;
+                    resolver.onChunk(cleaned, isExtracting);
                   }
                 }
               }
@@ -630,17 +636,17 @@ export default function Home() {
   useEffect(() => {
     const thread = chatThreadRef.current;
     
-    // 双延迟底沉滚动，抵消 KaTeX/Markdown 异步重绘的高度抖动
+    // 智能防抖/节流滚动：限制 60ms 周期，并采用 rAF 二次纠偏抵消公式和文本的高度抖动，减少 Forced Reflow
     const scrollToBottom = () => {
       if (!thread || !isAutoScrollEnabled.current) return;
+      const now = Date.now();
+      if (now - lastScrollTimeRef.current < 60) {
+        return;
+      }
+      lastScrollTimeRef.current = now;
       chatEndRef.current?.scrollIntoView({ behavior: "auto" });
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          chatEndRef.current?.scrollIntoView({ behavior: "auto" });
-          setTimeout(() => {
-            chatEndRef.current?.scrollIntoView({ behavior: "auto" });
-          }, 50);
-        });
+        chatEndRef.current?.scrollIntoView({ behavior: "auto" });
       });
     };
 
@@ -1065,7 +1071,7 @@ export default function Home() {
     contextStr: string,
     history: ChatMessage[],
     signal: AbortSignal,
-    onChunk?: (text: string) => void
+    onChunk?: (text: string, isExtracting?: boolean) => void
   ) {
     if (expert.isExternalAgent) {
       if (botStatuses[expert.id] !== "online") {
@@ -1105,14 +1111,14 @@ export default function Home() {
           }, 45000);
         };
 
-        const wrappedOnChunk = (text: string) => {
+        const wrappedOnChunk = (text: string, isExtracting?: boolean) => {
           if (!hasReceivedFirstChar) {
             hasReceivedFirstChar = true;
             cleanupTimeout(); // 清除 90 秒首字超时
           }
           resetKeepAliveTimeout(); // 刷新 45 秒断流超时
           if (onChunk) {
-            onChunk(text);
+            onChunk(text, isExtracting);
           }
         };
 
@@ -1209,8 +1215,9 @@ export default function Home() {
           if (line.startsWith("data: ") && line !== "data: [DONE]") {
             try {
               const data = JSON.parse(line.slice(6));
-              const reasoningChunk = data.choices[0]?.delta?.reasoning_content;
-              const contentChunk = data.choices[0]?.delta?.content;
+              const deltaObj = data.choices[0]?.delta;
+              const reasoningChunk = deltaObj?.reasoning_content || deltaObj?.reasoning || deltaObj?.thought;
+              const contentChunk = deltaObj?.content;
 
               if (reasoningChunk) {
                 if (!isNativeReasoning) {
@@ -1231,9 +1238,13 @@ export default function Home() {
               const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
               if (onChunk) {
                 if (isInsideReasoning) {
-                  onChunk(fullContent);
+                  onChunk(fullContent, false);
                 } else {
-                  onChunk(cleanStreamingJson(fullContent));
+                  const cleaned = cleanStreamingJson(fullContent);
+                  const isExtracting = (fullContent.includes("<think>") && !fullContent.includes("</think>"))
+                    ? false
+                    : cleaned.length < fullContent.trim().length;
+                  onChunk(cleaned, isExtracting);
                 }
               }
             } catch (e) {}
@@ -1362,9 +1373,11 @@ export default function Home() {
       }
 
       try {
-        const jsonMatch = fullContent.match(/({[\s\S]*?})/);
-        if (jsonMatch) {
-          const parsed = cleanAndParseJson<any>(jsonMatch[1]);
+        const firstBrace = fullContent.indexOf("{");
+        const lastBrace = fullContent.lastIndexOf("}");
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          const jsonString = fullContent.substring(firstBrace, lastBrace + 1);
+          const parsed = cleanAndParseJson<any>(jsonString);
           if (parsed && typeof parsed === "object" && "summary" in parsed) {
             return parsed;
           }
@@ -1488,7 +1501,7 @@ export default function Home() {
   // 圆桌讨论主提交入口
   async function handleSubmitDiscussion(
     event?: FormEvent<HTMLFormElement>,
-    editParams?: { targetMeetingId: string; userQuestion: string; baseHistory: ChatMessage[]; baseSources: any[] }
+    editParams?: { targetMeetingId: string; userQuestion: string; baseHistory: ChatMessage[]; baseSources: any[]; messageId?: string }
   ) {
     if (event) event.preventDefault();
     
@@ -1506,7 +1519,14 @@ export default function Home() {
     }
 
     // 缓存这轮提问发生前的整场历史对话列表
-    const conversationHistory = editParams ? editParams.baseHistory : targetMeeting.messages;
+    let conversationHistory = editParams ? editParams.baseHistory : targetMeeting.messages;
+    if (editParams && editParams.messageId) {
+      const msgIndex = targetMeeting.messages.findIndex(m => m.id === editParams.messageId);
+      if (msgIndex >= 0) {
+        // 保留被编辑的消息之前的所有历史消息，丢弃它本身及之后的所有过气气泡
+        conversationHistory = targetMeeting.messages.slice(0, msgIndex);
+      }
+    }
 
     // 1. 创建 User 消息
     const userMessage: ChatMessage = {
@@ -1541,7 +1561,8 @@ export default function Home() {
 
     // 获取参会的专家
     const selectedExperts = allExperts.filter(e => targetMeeting.expertIds.includes(e.id));
-    const contextStr = [projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
+    const meetingContextStr = `会议名称：${targetMeeting.name}\n会议背景与描述：${targetMeeting.description}`;
+    const contextStr = [meetingContextStr, projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
     // 本轮发言缓冲
     const previousTurns: { expertName: string; expertTitle?: string; content: string }[] = [];
@@ -1592,11 +1613,16 @@ export default function Home() {
           conversationHistory, 
           signal,
           (text) => {
-            modMessage.content = text;
-            const updatedMsgs = currentMeeting.messages.map(msg => 
-              msg.id === modMessageId ? { ...modMessage } : msg
+            modMessage = { ...modMessage, content: text };
+            setMeetings((prev) =>
+              prev.map((m) => {
+                if (m.id !== targetMeetingId) return m;
+                const updatedMessages = m.messages.map((msg) =>
+                  msg.id === modMessageId ? modMessage : msg
+                );
+                return { ...m, messages: updatedMessages };
+              })
             );
-            setMeetings(prev => prev.map(m => m.id === targetMeetingId ? { ...m, messages: updatedMsgs } : m));
           }
         );
         
@@ -1654,6 +1680,7 @@ export default function Home() {
         // ================= 前置：信息澄清与追问判断流程 (Step 1 to Step 5) =================
         if (currentMeeting.enableInquiryLoop) {
           let currentInquiryInput = activeQuestion;
+          let accumulatedQuestion = activeQuestion;
           inquiryLoop: while (true) {
             if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
@@ -1679,12 +1706,10 @@ export default function Home() {
               setInquiryPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
             }
 
-            const inquiryMatch = inquiryResText.match(/<inquiry>([\s\S]*?)<\/inquiry>/);
-            if (inquiryMatch) {
-              const inquiryPrompt = inquiryMatch[1].trim();
-              if (inquiryPrompt && inquiryPrompt !== "NO_INQUIRY") {
-                // 展示信息补充面板，并将流程挂起
-                setInquiryPromptText(inquiryPrompt);
+            const inquiryPrompt = extractInquiryPrompt(inquiryResText);
+            if (inquiryPrompt && inquiryPrompt !== "NO_INQUIRY") {
+              // 展示信息补充面板，并将流程挂起
+              setInquiryPromptText(inquiryPrompt);
                 setInquiryConsoleMeetingId(targetMeetingId);
 
                 // 挂起 Promise 等待用户在环操作
@@ -1698,30 +1723,42 @@ export default function Home() {
                   // 用户选择跳过，讨论正常推进
                   break inquiryLoop;
                 } else if (userAction.type === "submit" && userAction.content) {
-                  // 用户补充了信息，创建消息上屏，并重新回到判定阶段 (step 1)
+                  // 用户补充了信息，直接追加到原用户消息气泡尾部
                   const contentText = userAction.content.trim();
-                  const inquiryReplyMsg: ChatMessage = {
-                    id: `msg-${Date.now()}-inquiry-reply`,
-                    meetingId: targetMeetingId,
-                    tenantId: TENANT_ID,
-                    role: "user",
-                    senderName: userProfile.name,
-                    senderTitle: `${userProfile.title}(澄清说明)`,
-                    content: `【针对追问补充数据事实】：\n${contentText}`,
-                    createdAt: Date.now(),
-                  };
+                  accumulatedQuestion = `${accumulatedQuestion}\n\n**[补充澄清]**\n**问**：${inquiryPrompt}\n**答**：${contentText}`;
 
-                  await saveCurrentMeetingState({ ...currentMeeting, messages: [...currentMeeting.messages, inquiryReplyMsg] });
+                  // 1. 同步更新前端页面中该用户消息气泡的 React 状态
+                  setMeetings((prev) =>
+                    prev.map((m) => {
+                      if (m.id !== targetMeetingId) return m;
+                      const nextMessages = m.messages.map((msg) => {
+                        if (msg.id === userMessage.id) {
+                          return { ...msg, content: accumulatedQuestion };
+                        }
+                        return msg;
+                      });
+                      return { ...m, messages: nextMessages };
+                    })
+                  );
 
-                  // 拼入上下文并重新回到 step 1 进行判定
-                  activeContext = `${activeContext}\n\n【澄清补充信息】：\n${contentText}`;
-                  currentInquiryInput = contentText;
+                  // 2. 更新内存数据并存盘
+                  const nextMessages = currentMeeting.messages.map((msg) => {
+                    if (msg.id === userMessage.id) {
+                      return { ...msg, content: accumulatedQuestion };
+                    }
+                    return msg;
+                  });
+                  currentMeeting = { ...currentMeeting, messages: nextMessages };
+                  await saveCurrentMeetingState(currentMeeting);
+
+                  // 重新回到 step 1 进行判定 (澄清内容已保存在 accumulatedQuestion 中，避免在上下文中重复拼接)
+                  currentInquiryInput = accumulatedQuestion;
                   continue inquiryLoop;
                 }
               }
-            }
             break inquiryLoop;
           }
+          activeQuestion = accumulatedQuestion;
         }
 
         let remainCandidates = nextRoundCandidates !== null ? nextRoundCandidates : [...initialCandidates];
@@ -1783,12 +1820,21 @@ export default function Home() {
               activeContext,
               conversationHistory,
               signal,
-              (text) => {
-                expertMessage.content = text;
-                const updatedMsgs = currentMeeting.messages.map(msg => 
-                  msg.id === expertMessageId ? { ...expertMessage } : msg
+              (text, isExtracting) => {
+                expertMessage = { 
+                  ...expertMessage, 
+                  content: text,
+                  isStanceExtracting: isExtracting || false
+                };
+                setMeetings((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== targetMeetingId) return m;
+                    const updatedMessages = m.messages.map((msg) =>
+                      msg.id === expertMessageId ? expertMessage : msg
+                    );
+                    return { ...m, messages: updatedMessages };
+                  })
                 );
-                setMeetings(prev => prev.map(m => m.id === targetMeetingId ? { ...m, messages: updatedMsgs } : m));
               }
             );
             
@@ -1856,11 +1902,16 @@ export default function Home() {
           conversationHistory,
           signal,
           (text) => {
-            modMessage.content = text;
-            const updatedMsgs = currentMeeting.messages.map(msg => 
-              msg.id === modMessageId ? { ...modMessage } : msg
+            modMessage = { ...modMessage, content: text };
+            setMeetings((prev) =>
+              prev.map((m) => {
+                if (m.id !== targetMeetingId) return m;
+                const updatedMessages = m.messages.map((msg) =>
+                  msg.id === modMessageId ? modMessage : msg
+                );
+                return { ...m, messages: updatedMessages };
+              })
             );
-            setMeetings(prev => prev.map(m => m.id === targetMeetingId ? { ...m, messages: updatedMsgs } : m));
           }
         );
 
@@ -2028,6 +2079,9 @@ export default function Home() {
     } catch (e: any) {
       if (e.name === "AbortError" || signal.aborted) {
         // 叫停处理
+        setInquiryConsoleMeetingId(null);
+        setInquiryPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+        
         const abortMessage: ChatMessage = {
           id: `msg-abort-${Date.now()}`,
           meetingId: targetMeetingId,
@@ -2128,12 +2182,21 @@ export default function Home() {
         contextStr,
         conversationHistory,
         signal,
-        (text) => {
-          expertMessage.content = text;
-          const updatedMsgs = currentMeetingState.messages.map(msg => 
-            msg.id === expertMessageId ? { ...expertMessage } : msg
+        (text, isExtracting) => {
+          expertMessage = { 
+            ...expertMessage, 
+            content: text,
+            isStanceExtracting: isExtracting || false
+          };
+          setMeetings((prev) =>
+            prev.map((m) => {
+              if (m.id !== targetMeetingId) return m;
+              const updatedMessages = m.messages.map((msg) =>
+                msg.id === expertMessageId ? expertMessage : msg
+              );
+              return { ...m, messages: updatedMessages };
+            })
           );
-          setMeetings(prev => prev.map(m => m.id === targetMeetingId ? { ...m, messages: updatedMsgs } : m));
         }
       );
 
@@ -2764,290 +2827,25 @@ export default function Home() {
                 const isExp = message.role === "expert";
 
                 return (
-                  <article
-                    className={`chat-message ${message.role}`}
+                  <ChatMessageCard
                     key={message.id}
-                  >
-                    <div className="message-avatar">
-                      {isUser ? "你" : isMod ? "主持" : message.senderName.slice(0, 2)}
-                    </div>
-                    <div className="message-body">
-                      {(() => {
-                        const safeContent = message.content || "";
-                        const systemLoader = SYSTEM_LOADERS[safeContent as keyof typeof SYSTEM_LOADERS];
-
-                        let displayContent = safeContent.replace(/[\s\n>]*$/, '');
-                        if (systemLoader) {
-                          displayContent = "";
-                        }
-
-                        let thinkingContent = "";
-                        let isThinkingDone = false;
-                        const thinkMatch = displayContent.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
-                        
-                        if (thinkMatch) {
-                          thinkingContent = thinkMatch[1].trim();
-                          isThinkingDone = safeContent.includes("</think>");
-                          displayContent = displayContent.replace(thinkMatch[0], "").trim();
-                        } else {
-                          isThinkingDone = true;
-                        }
-
-                        const isTTFB = speakingExpertIds[activeMeetingId] === message.senderId && safeContent.length === 0;
-                        const isStartingThink = speakingExpertIds[activeMeetingId] === message.senderId && safeContent.startsWith("<") && !thinkMatch;
-
-                        return (
-                          <>
-                            {(isExp || isMod || isUser) && (
-                              <div style={{ 
-                                display: "flex", 
-                                alignItems: "flex-start", 
-                                gap: "12px", 
-                                marginBottom: "4px",
-                                justifyContent: isUser ? "flex-end" : "flex-start"
-                              }}>
-                                <span style={{ 
-                                  fontSize: "11px", 
-                                  color: "var(--muted)", 
-                                  marginTop: "2px",
-                                  flexShrink: 0
-                                }}>
-                                  {(() => {
-                                    if (isUser) {
-                                      return <span>{userProfile.name} · {userProfile.title}</span>;
-                                    }
-                                    const isPseudoMod = isExp && (message.senderName === "主持人" || message.senderId === "moderator");
-                                    if (isMod || isPseudoMod) {
-                                      if (message.senderName === "系统提示" || message.senderName === "系统") {
-                                        return <span>{message.senderName}</span>;
-                                      }
-                                      const name = systemPrompts?.moderatorName || message.senderName || "主持人";
-                                      const title = systemPrompts?.moderatorTitle || message.senderTitle || "决策协调官";
-                                      return <span>{name} · {title}</span>;
-                                    }
-                                    if (isExp) {
-                                      const curExp = allExperts.find((e: any) => e.id === message.senderId);
-                                      const isExt = curExp?.isExternalAgent;
-                                      const name = curExp?.name || message.senderName;
-                                      const title = curExp?.title || message.senderTitle || "总监";
-                                      return (
-                                        <span style={{ display: "inline-flex", alignItems: "center" }}>
-                                          {name} · {title}
-                                          {isExt && (
-                                            <span style={{ 
-                                              fontSize: "10px", 
-                                              color: "var(--muted)", 
-                                              padding: "1.5px 5px", 
-                                              border: "1px solid var(--line)", 
-                                              borderRadius: "4px", 
-                                              fontWeight: "normal",
-                                              display: "inline-block",
-                                              marginLeft: "6px",
-                                              lineHeight: 1
-                                            }}>
-                                              小龙虾
-                                            </span>
-                                          )}
-                                        </span>
-                                      );
-                                    }
-                                    return <span>{message.senderName || ""}</span>;
-                                  })()}
-                                </span>
-                                
-                                {thinkingContent && isThinkingDone && (
-                                  <details style={{ flex: 1, textAlign: isUser ? "right" : "left" }}>
-                                    <summary style={{ 
-                                      fontSize: "11px", color: "var(--muted)", cursor: "pointer", userSelect: "none", 
-                                      fontWeight: "500", display: "inline-block",
-                                      background: "var(--surface-strong)", padding: "2px 8px", borderRadius: "999px",
-                                      border: "1px solid var(--line)"
-                                    }}>
-                                      深度思考已折叠
-                                    </summary>
-                                    <div style={{ 
-                                      fontSize: "13px", color: "var(--muted)", whiteSpace: "pre-wrap", 
-                                      fontStyle: "italic", marginTop: "8px", padding: "10px 14px", 
-                                      background: "rgba(0,0,0,0.02)", border: "1px dashed var(--line)", 
-                                      borderRadius: "6px", textAlign: "left"
-                                    }}>
-                                      {thinkingContent}
-                                    </div>
-                                  </details>
-                                )}
-                              </div>
-                            )}
-
-                            {editingMessageId === message.id ? (
-                              <div className="edit-message-container" style={{ marginTop: "4px", width: "100%", display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start" }}>
-                                <textarea
-                                  value={editingContent}
-                                  onChange={(e) => setEditingContent(e.target.value)}
-                                  autoFocus
-                                  style={{
-                                    width: "100%", maxWidth: "600px", minHeight: "80px", padding: "12px", borderRadius: "12px",
-                                    border: "1px solid var(--line)", background: "var(--surface)",
-                                    fontSize: "14px", fontFamily: "inherit", resize: "vertical",
-                                    boxShadow: "0 2px 8px rgba(0,0,0,0.05)", outline: "none"
-                                  }}
-                                />
-                                <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
-                                  <button
-                                    onClick={() => setEditingMessageId(null)}
-                                    style={{ padding: "6px 14px", borderRadius: "6px", border: "1px solid var(--line)", background: "var(--surface)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}
-                                  >
-                                    取消
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      setEditingMessageId(null);
-                                      const msgIndex = activeMeeting!.messages.findIndex(m => m.id === message.id);
-                                      const baseHistory = activeMeeting!.messages.slice(0, msgIndex);
-                                      handleSubmitDiscussion(undefined, {
-                                        targetMeetingId: activeMeetingId!,
-                                        userQuestion: editingContent,
-                                        baseHistory: baseHistory,
-                                        baseSources: message.sources || []
-                                      });
-                                    }}
-                                    style={{ padding: "6px 14px", borderRadius: "6px", border: "none", background: "var(--ink)", color: "var(--surface)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}
-                                  >
-                                    保存并重新生成
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <>
-                                {systemLoader && (
-                                  <div 
-                                    className="thinking-card" 
-                                    style={{ 
-                                      borderStyle: "solid", 
-                                      borderColor: (systemLoader as any).isError ? "var(--red)" : "var(--amber)", 
-                                      borderRadius: "8px", 
-                                      background: (systemLoader as any).isError ? "var(--red-soft)" : "transparent", 
-                                      padding: "12px 14px", 
-                                      marginBottom: "8px" 
-                                    }}
-                                  >
-                                    <div className="thinking-loader" style={{ margin: 0 }}>
-                                      <strong style={{ color: (systemLoader as any).isError ? "var(--red)" : "var(--amber)" }}>
-                                        {message.senderName}
-                                      </strong>{" "}
-                                      <span style={{ color: (systemLoader as any).isError ? "var(--red)" : "inherit" }}>
-                                        {systemLoader.title}
-                                      </span>
-                                      {!(systemLoader as any).isError && (
-                                        <div className="dot-pulse" style={{ marginLeft: "6px" }}>
-                                          <span />
-                                          <span />
-                                          <span />
-                                        </div>
-                                      )}
-                                    </div>
-                                    <div style={{ fontSize: "12px", color: "var(--muted)", marginTop: "4px" }}>
-                                      {systemLoader.subtitle}
-                                    </div>
-                                  </div>
-                                )}
-
-
-                                {(!isThinkingDone && (isTTFB || isStartingThink || thinkingContent.length > 0)) && (
-                                  <div className="thinking-card" style={{ marginBottom: "8px", background: "transparent", border: "none", padding: "0" }}>
-                                    <div className="thinking-loader" style={{ margin: 0, opacity: 0.7 }}>
-                                      <span>
-                                        {isTTFB ? "正在审视议题" : "正在深度思考"}
-                                      </span>
-                                      <div className="dot-pulse" style={{ marginLeft: "4px" }}>
-                                        <span /><span /><span />
-                                      </div>
-                                    </div>
-                                    {isTTFB && (
-                                      <div style={{ fontSize: "12px", color: "var(--muted)", marginTop: "4px" }}>
-                                        正在结合个人对抗强度与会议历史多轮对话上下文编排论点...
-                                      </div>
-                                    )}
-                                    {thinkingContent && (
-                                      <div style={{ fontSize: "13px", color: "var(--muted)", whiteSpace: "pre-wrap", fontStyle: "italic", marginTop: "8px", paddingLeft: "12px", borderLeft: "2px solid var(--line)" }}>
-                                        {thinkingContent}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-
-                                {displayContent && (
-                                  <div className="message-hover-wrapper" style={{ display: "flex", alignItems: "flex-end", justifyContent: isUser ? "flex-end" : "flex-start", gap: "8px" }}>
-                                    {isUser && !isSessionActive && (
-                                      <button
-                                        className="message-edit-btn"
-                                        onClick={() => {
-                                          setEditingMessageId(message.id);
-                                          setEditingContent(message.content);
-                                        }}
-                                        title="重新编辑"
-                                      >
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                        </svg>
-                                      </button>
-                                    )}
-                                    <div className="message-content markdown-body" style={{ fontSize: "14px", position: "relative", margin: 0 }}>
-                                      <ReactMarkdown 
-                                        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
-                                        rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
-                                      >
-                                        {displayContent}
-                                      </ReactMarkdown>
-                                    </div>
-                                  </div>
-                                )}
-                              </>
-                            )}
-                          </>
-                        );
-                      })()}
-
-                      {message.sources && message.sources.length > 0 && (
-                        <div className="message-sources" style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px", justifyContent: isUser ? "flex-end" : "flex-start" }}>
-                          {message.sources.map((source) => (
-                            <div key={source.id} className="attachment-pill" style={{ background: "var(--surface)", border: "1px solid var(--line)", padding: "4px 8px", borderRadius: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
-                              <span style={{ fontSize: "10px", fontWeight: "bold", color: "var(--muted)", background: "var(--surface-strong)", padding: "2px 4px", borderRadius: "4px" }}>
-                                {source.kind.toUpperCase()}
-                              </span>
-                              <span style={{ fontSize: "13px", color: "var(--ink)", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.name}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {message.expertStance && (
-                        <div className="assistant-result" style={{ marginTop: "10px" }}>
-                          <div className="result-card" style={{ borderLeft: "3px solid var(--amber)", borderRadius: "8px" }}>
-                            <div className="result-grid">
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>立场观点：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.expertStance.stance))}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>关键风险：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.expertStance.concern))}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>实施建议：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.expertStance.recommendation))}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>方案取舍：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.expertStance.tradeoff))}</ReactMarkdown></div></div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {message.moderatorSummary && (
-                        <div className="assistant-result" style={{ marginTop: "10px" }}>
-                          <div className="result-card" style={{ borderLeft: "3px solid var(--blue)", borderRadius: "8px", background: "rgba(2, 132, 199, 0.03)" }}>
-                            <div className="result-grid">
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0, color: "var(--blue)" }}>总结共识：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.moderatorSummary.consensus))}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0, color: "var(--blue)" }}>主要分歧：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.moderatorSummary.disagreements))}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0, color: "var(--blue)" }}>最终决策：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.moderatorSummary.decisions))}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0, color: "var(--blue)" }}>下一步行动：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.moderatorSummary.nextActions))}</ReactMarkdown></div></div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </article>
+                    message={message}
+                    isUser={isUser}
+                    isMod={isMod}
+                    isExp={isExp}
+                    activeMeetingId={activeMeetingId}
+                    isSessionActive={isSessionActive}
+                    userProfile={userProfile}
+                    systemPrompts={systemPrompts}
+                    allExperts={allExperts}
+                    speakingExpertId={speakingExpertIds[activeMeetingId] || null}
+                    isSynthesisPending={!!synthesisPendingMeetings[activeMeetingId]}
+                    editingMessageId={editingMessageId}
+                    editingContent={editingContent}
+                    setEditingMessageId={setEditingMessageId}
+                    setEditingContent={setEditingContent}
+                    handleSubmitDiscussion={handleSubmitDiscussion}
+                  />
                 );
               })
             ) : (
@@ -3101,26 +2899,6 @@ export default function Home() {
               </article>
             )}
 
-            {synthesisPendingMeetings[activeMeetingId] && (
-              <article className="chat-message moderator">
-                <div className="message-avatar">主持</div>
-                <div className="message-body">
-                  <div className="thinking-card" style={{ borderStyle: "solid", borderColor: "var(--amber)", borderRadius: "8px" }}>
-                    <div className="thinking-loader">
-                      <strong style={{ color: "var(--amber)" }}>主持人</strong> 正在汇总本轮会议纪要
-                      <div className="dot-pulse">
-                        <span />
-                        <span />
-                        <span />
-                      </div>
-                    </div>
-                    <span style={{ fontSize: "12px", color: "var(--muted)" }}>
-                      正在综合各个智能体的共识、分歧以及下一步建议动作...
-                    </span>
-                  </div>
-                </div>
-              </article>
-            )}
 
             {inquiryPendingMeetings[activeMeetingId] && (
               <article className="chat-message moderator">
@@ -3411,7 +3189,14 @@ export default function Home() {
                   lineHeight: "1.6",
                   marginBottom: "16px"
                 }}>
-                  💡 <strong>问询问题：</strong> {inquiryPromptText}
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <span style={{ flexShrink: 0 }}>💡 <strong>问询问题：</strong></span>
+                    <div style={{ flex: 1, minWidth: 0 }} className="markdown-body">
+                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>
+                        {inquiryPromptText}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
                 </div>
 
                 <textarea

@@ -72,6 +72,7 @@ export type ChatMessage = TenantScoped & {
   senderName: string;
   senderTitle?: string;
   content: string;
+  isStanceExtracting?: boolean; // 临时属性：是否正在提取立场摘要
   expertStance?: {
     stance: string;
     concern: string;

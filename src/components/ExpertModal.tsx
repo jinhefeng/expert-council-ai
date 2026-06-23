@@ -367,14 +367,27 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                   </button>
                 </div>
 
+                {isGeneratingExpert && (
+                  <div className="assistant-result" style={{ marginTop: "10px", marginBottom: "16px" }}>
+                    <div className="result-card" style={{ borderLeft: "3px solid var(--amber)", borderRadius: "8px", background: "rgba(245, 158, 11, 0.02)" }}>
+                      <div className="thinking-loader" style={{ margin: "4px 0", fontSize: "13px" }}>
+                        <strong style={{ color: "var(--amber)" }}>AI 决策秘书</strong> 正在自动提炼并补全专家人设
+                        <div className="dot-pulse" style={{ marginLeft: "6px" }}>
+                          <span /><span /><span />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <label className="compact-field">
                   <span>通用专业审视视角 (Lens) *<InfoTooltip text="当面对不同会议议题时，该角色习惯从哪个专门的专业角度进行剖析？（例如：系统架构稳定性、终端用户使用旅程等，请使用通用且不局限于特定设计方案的表述）" /></span>
-                  <input required placeholder="说明该智能体着重关注哪些点" value={draft.lens || ""} onChange={e => setDraft({ ...draft, lens: e.target.value })} />
+                  <input required placeholder="说明该智能体着重关注哪些点" value={draft.lens || ""} onChange={e => setDraft({ ...draft, lens: e.target.value })} disabled={isGeneratingExpert} />
                 </label>
 
                 <label className="compact-field">
                   <span>智能体性格脾气 (Temperament)<InfoTooltip text="控制专家的说话语气，比如严厉、温和、讽刺等" /></span>
-                  <input placeholder="如：极其挑剔、强迫症、极其保守" value={draft.temperament || ""} onChange={e => setDraft({ ...draft, temperament: e.target.value })} />
+                  <input placeholder="如：极其挑剔、强迫症、极其保守" value={draft.temperament || ""} onChange={e => setDraft({ ...draft, temperament: e.target.value })} disabled={isGeneratingExpert} />
                 </label>
 
                 <label className="compact-field">
@@ -383,6 +396,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                     placeholder="如：转化率, 用户留存, 获客成本"
                     value={draft.focus?.join(", ") || ""}
                     onChange={e => setDraft({ ...draft, focus: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
+                    disabled={isGeneratingExpert}
                   />
                 </label>
                 <label className="compact-field">
@@ -392,6 +406,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                     placeholder="可以填入该智能体专属的完整 System Setting。"
                     value={draft.systemPrompt || ""}
                     onChange={e => setDraft({ ...draft, systemPrompt: e.target.value })}
+                    disabled={isGeneratingExpert}
                     style={{ width: "100%", height: "120px", fontFamily: "monospace", resize: "vertical", fontSize: "13px", lineHeight: 1.5 }}
                   />
                 </label>
@@ -404,6 +419,7 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                     max="5"
                     value={draft.debateIntensity || 3}
                     onChange={(e) => setDraft({ ...draft, debateIntensity: Number(e.target.value) })}
+                    disabled={isGeneratingExpert}
                     style={{ width: "100%", marginTop: "8px" }}
                   />
                 </label>

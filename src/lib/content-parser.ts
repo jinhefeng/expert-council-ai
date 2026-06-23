@@ -355,9 +355,10 @@ export function repairJson(jsonStr: string): string {
   let inString = false;
   let isEscaped = false;
   const stack: ("{" | "[")[] = [];
+  const chars = s.split("");
 
-  for (let i = 0; i < s.length; i++) {
-    const char = s[i];
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i];
 
     if (inString) {
       if (char === "\\") {
@@ -376,7 +377,12 @@ export function repairJson(jsonStr: string): string {
       } else if (char === "[") {
         stack.push("[");
       } else if (char === "}") {
-        if (stack[stack.length - 1] === "{") {
+        if (stack[stack.length - 1] === "[") {
+          // 自动纠正：在大括号 } 闭合处如果是数组，说明模型把 ] 错写成了 }。
+          // 将其纠正为 ]，并弹出栈顶中括号。
+          chars[i] = "]";
+          stack.pop();
+        } else if (stack[stack.length - 1] === "{") {
           stack.pop();
         }
       } else if (char === "]") {
@@ -387,7 +393,7 @@ export function repairJson(jsonStr: string): string {
     }
   }
 
-  let repaired = s;
+  let repaired = chars.join("");
 
   // 转义截断修复
   if (inString && isEscaped) {
@@ -502,4 +508,21 @@ export function beautifyListFormatting(text: string): string {
   formatted = formatted.replace(/(?<=[^\s\d;；。，,])\s+(?=\d+[\.、]|[一二三四五六七八九十]+[、\.])/g, "\n");
   
   return formatted;
+}
+
+/**
+ * 稳健的“末位检索与自适应截断”提取算法，只抓取最后一个真正的 <inquiry> 提问包裹块，
+ * 彻底隔离大模型在前面为了构思而说出的英文废话或 <inquiry> 单词泄露。
+ */
+export function extractInquiryPrompt(text: string): string {
+  if (!text) return "";
+  const lastInquiryIdx = text.lastIndexOf("<inquiry>");
+  if (lastInquiryIdx === -1) return "";
+  
+  let content = text.substring(lastInquiryIdx + 9); // "<inquiry>".length === 9
+  const closeIdx = content.indexOf("</inquiry>");
+  if (closeIdx !== -1) {
+    content = content.substring(0, closeIdx);
+  }
+  return content.trim();
 }

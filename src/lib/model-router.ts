@@ -140,7 +140,12 @@ export async function callLLM({
   }
   
   const finishReason = data.choices?.[0]?.finish_reason;
-  const content = data.choices?.[0]?.message?.content;
+  const messageObj = data.choices?.[0]?.message;
+  let content = messageObj?.content || "";
+  const reasoningContent = messageObj?.reasoning_content || messageObj?.reasoning || messageObj?.thought;
+  if (reasoningContent) {
+    content = `<think>\n${reasoningContent}\n</think>\n${content}`;
+  }
   
   if (finishReason === "length" && (!content || content.trim() === "")) {
     throw new Error(`生成被截断！模型达到了最大 Token 限制 (当前限制为 ${maxTokens}，可能是推理模型思考过程太长耗尽了 Token)。请调大 maxTokens。原生返回: ${JSON.stringify(data)}`);
