@@ -5,7 +5,7 @@ import remarkBreaks from "remark-breaks";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { ChatMessage, Expert, SystemPromptsConfig } from "@/lib/types";
-import { beautifyListFormatting } from "@/lib/content-parser";
+import { beautifyListFormatting, extractStreamingJsonKey, isStreamingJsonKeyClosed } from "@/lib/content-parser";
 import "katex/dist/katex.min.css";
 
 const SYSTEM_LOADERS = {
@@ -54,6 +54,72 @@ function ensureString(val: any): string {
   }
   return String(val);
 }
+
+interface ResultCardField {
+  label: string;
+  key: string;
+  labelColor?: string;
+}
+
+interface StructuredResultCardProps {
+  data: any;
+  isLoading: boolean;
+  themeColor: string;
+  loadingText: string;
+  bgStyle?: React.CSSProperties;
+  fields: ResultCardField[];
+}
+
+const StructuredResultCard: React.FC<StructuredResultCardProps> = ({
+  data,
+  isLoading,
+  themeColor,
+  loadingText,
+  bgStyle = {},
+  fields
+}) => {
+  if (!data && !isLoading) return null;
+
+  return (
+    <div className="assistant-result" style={{ marginTop: "10px" }}>
+      <div 
+        className="result-card" 
+        style={{ 
+          borderLeft: `3px solid ${themeColor}`, 
+          borderRadius: "8px",
+          ...bgStyle
+        }}
+      >
+        {data ? (
+          <div className="result-grid">
+            {fields.map((f, idx) => (
+              <div key={idx} style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                <strong style={{ flexShrink: 0, color: f.labelColor || "inherit" }}>
+                  {f.label}：
+                </strong>
+                <div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body">
+                  <ReactMarkdown 
+                    remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} 
+                    rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
+                  >
+                    {beautifyListFormatting(ensureString(data[f.key]))}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="thinking-loader" style={{ margin: "4px 0", fontSize: "13px" }}>
+            <strong style={{ color: themeColor }}>AI 决策秘书</strong> {loadingText}
+            <div className="dot-pulse" style={{ marginLeft: "6px" }}>
+              <span /><span /><span />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 interface ChatMessageCardProps {
   message: ChatMessage;
@@ -116,12 +182,17 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
     isThinkingDone = true;
   }
 
+  // 针对 AI 主持人总结消息进行流式提取 summary 正文，避免在流式期间将残损的 JSON 裸露渲染
+  if (isMod && message.senderName !== "系统提示" && message.senderName !== "系统") {
+    displayContent = extractStreamingJsonKey(displayContent, "summary");
+  }
+
   // 计算专家或者主持人首字就绪前的 Loading 状态
   const isExpertTTFB = isExp && speakingExpertId === message.senderId && safeContent.length === 0;
   const isStartingThink = isExp && speakingExpertId === message.senderId && safeContent.startsWith("<") && !thinkingContent;
   const isModTTFB = isMod && isSynthesisPending && safeContent.length === 0;
 
-  const shouldShowStanceLoading = 
+  const shouldShowStanceLoading = !!(
     isExp && 
     !message.expertStance && 
     displayContent.length > 0 && 
@@ -130,7 +201,18 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
     (
       speakingExpertId !== message.senderId || 
       message.isStanceExtracting
-    );
+    )
+  );
+
+  const shouldShowModSummaryLoading =
+    isMod &&
+    !message.moderatorSummary &&
+    isStreamingJsonKeyClosed(safeContent, "summary") &&
+    displayContent.length > 0 &&
+    safeContent !== "__TIMEOUT__" &&
+    safeContent !== "__ERROR__" &&
+    message.senderName !== "系统提示" &&
+    message.senderName !== "系统";
 
   return (
     <article className={`chat-message ${message.role}`}>
@@ -390,44 +472,33 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
           </div>
         )}
 
-        {message.expertStance ? (
-          <div className="assistant-result" style={{ marginTop: "10px" }}>
-            <div className="result-card" style={{ borderLeft: "3px solid var(--amber)", borderRadius: "8px" }}>
-              <div className="result-grid">
-                <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>立场观点：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.expertStance.stance))}</ReactMarkdown></div></div>
-                <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>关键风险：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.expertStance.concern))}</ReactMarkdown></div></div>
-                <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>实施建议：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.expertStance.recommendation))}</ReactMarkdown></div></div>
-                <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>方案取舍：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.expertStance.tradeoff))}</ReactMarkdown></div></div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          shouldShowStanceLoading && (
-            <div className="assistant-result" style={{ marginTop: "10px" }}>
-              <div className="result-card" style={{ borderLeft: "3px solid var(--amber)", borderRadius: "8px", background: "rgba(245, 158, 11, 0.02)" }}>
-                <div className="thinking-loader" style={{ margin: "4px 0", fontSize: "13px" }}>
-                  <strong style={{ color: "var(--amber)" }}>AI 决策秘书</strong> 正在提取并提炼专家立场摘要
-                  <div className="dot-pulse" style={{ marginLeft: "6px" }}>
-                    <span /><span /><span />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )
-        )}
+        <StructuredResultCard
+          data={message.expertStance}
+          isLoading={shouldShowStanceLoading}
+          themeColor="var(--amber)"
+          loadingText="正在提取并提炼专家立场摘要"
+          bgStyle={{ background: "rgba(245, 158, 11, 0.02)" }}
+          fields={[
+            { label: "立场观点", key: "stance" },
+            { label: "关键风险", key: "concern" },
+            { label: "实施建议", key: "recommendation" },
+            { label: "方案取舍", key: "tradeoff" }
+          ]}
+        />
 
-        {message.moderatorSummary && (
-          <div className="assistant-result" style={{ marginTop: "10px" }}>
-            <div className="result-card" style={{ borderLeft: "3px solid var(--blue)", borderRadius: "8px", background: "rgba(2, 132, 199, 0.03)" }}>
-              <div className="result-grid">
-                <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0, color: "var(--blue)" }}>总结共识：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.moderatorSummary.consensus))}</ReactMarkdown></div></div>
-                <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0, color: "var(--blue)" }}>主要分歧：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.moderatorSummary.disagreements))}</ReactMarkdown></div></div>
-                <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0, color: "var(--blue)" }}>最终决策：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.moderatorSummary.decisions))}</ReactMarkdown></div></div>
-                <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0, color: "var(--blue)" }}>下一步行动：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>{beautifyListFormatting(ensureString(message.moderatorSummary.nextActions))}</ReactMarkdown></div></div>
-              </div>
-            </div>
-          </div>
-        )}
+        <StructuredResultCard
+          data={message.moderatorSummary}
+          isLoading={shouldShowModSummaryLoading}
+          themeColor="var(--blue)"
+          loadingText="正在提取并提炼会议总结与纪要卡片"
+          bgStyle={{ background: "rgba(2, 132, 199, 0.03)" }}
+          fields={[
+            { label: "总结共识", key: "consensus", labelColor: "var(--blue)" },
+            { label: "主要分歧", key: "disagreements", labelColor: "var(--blue)" },
+            { label: "最终决策", key: "decisions", labelColor: "var(--blue)" },
+            { label: "下一步行动", key: "nextActions", labelColor: "var(--blue)" }
+          ]}
+        />
       </div>
     </article>
   );

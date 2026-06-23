@@ -1057,9 +1057,21 @@ export default function AdminPage() {
                   <span>自主决策最大推进轮数 (1-10)<CommonHelpButton title="自主决策最大推进轮数" text="自主决策模式下，讨论能够自动进入的最多反馈大轮数。建议设为3，防止无限循环" onShowHelp={showCommonHelp} /></span>
                   <input type="number" required value={llmParams.maxAutonomousRounds ?? 3} onChange={e => setLlmParams({ ...llmParams, maxAutonomousRounds: parseInt(e.target.value) })} />
                 </label>
-                <label className="compact-field" style={{ gridColumn: "1 / -1" }}>
-                  <span>自主决策倒计时秒数 (秒)<CommonHelpButton title="自主决策倒计时秒数" text="自主决策模式下，展现决策面板后进行自动选择并推进的等待秒数。在此期间用户移入鼠标可取消倒计时并转换为普通决策模式" onShowHelp={showCommonHelp} /></span>
+                <label className="compact-field">
+                  <span>自主决策倒计时 (秒)<CommonHelpButton title="自主决策倒计时" text="自主决策模式下，展现决策面板后进行自动选择并推进的等待秒数。在此期间用户移入鼠标可取消倒计时" onShowHelp={showCommonHelp} /></span>
                   <input type="number" required value={llmParams.autonomousCountdownSeconds ?? 10} onChange={e => setLlmParams({ ...llmParams, autonomousCountdownSeconds: parseInt(e.target.value) })} />
+                </label>
+                <label className="compact-field">
+                  <span>流式无活动超时断流 (秒)<CommonHelpButton title="流式无活动超时断流" text="在流式读取过程中，若超过此秒数未接收到任何数据块，看门狗将强行取消读取并触发自愈（默认30秒）。" onShowHelp={showCommonHelp} /></span>
+                  <input type="number" required value={llmParams.streamInactiveTimeoutSeconds ?? 30} onChange={e => setLlmParams({ ...llmParams, streamInactiveTimeoutSeconds: parseInt(e.target.value) })} />
+                </label>
+                <label className="compact-field">
+                  <span>外部专家首字响应超时 (秒)<CommonHelpButton title="外部专家首字响应超时" text="请求外部智能体发言时，等待第一个字流式返回的最大秒数，超时将自动跳过此智能体（默认90秒）。" onShowHelp={showCommonHelp} /></span>
+                  <input type="number" required value={llmParams.expertFirstCharTimeoutSeconds ?? 90} onChange={e => setLlmParams({ ...llmParams, expertFirstCharTimeoutSeconds: parseInt(e.target.value) })} />
+                </label>
+                <label className="compact-field">
+                  <span>外部专家流式断流超时 (秒)<CommonHelpButton title="外部专家流式断流超时" text="外部智能体发言流开始后，等待后续文本输入的最大秒数，超时将自动跳过并断开（默认45秒）。" onShowHelp={showCommonHelp} /></span>
+                  <input type="number" required value={llmParams.expertStreamTimeoutSeconds ?? 45} onChange={e => setLlmParams({ ...llmParams, expertStreamTimeoutSeconds: parseInt(e.target.value) })} />
                 </label>
                 <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", marginTop: "8px" }}>
                   <button type="submit" className="primary-button">保存调度参数</button>

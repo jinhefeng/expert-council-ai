@@ -107,6 +107,9 @@ export type LLMParamsConfig = TenantScoped & {
   nextSpeakerTemperature: number;
   maxAutonomousRounds?: number;           // 最大自主决策轮数
   autonomousCountdownSeconds?: number;   // 自主决策倒计时秒数
+  streamInactiveTimeoutSeconds?: number;  // 流式无活动超时断流秒数
+  expertFirstCharTimeoutSeconds?: number; // 外部智能体首字响应超时秒数
+  expertStreamTimeoutSeconds?: number;    // 外部智能体流式断流超时秒数
 };
 
 export type SystemPromptsConfig = TenantScoped & {

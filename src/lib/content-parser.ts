@@ -526,3 +526,98 @@ export function extractInquiryPrompt(text: string): string {
   }
   return content.trim();
 }
+
+/**
+ * 极其稳健的通用流式残损 JSON 属性值提取器
+ * 支持在流式输出（JSON 尚未闭合且残缺）时，实时提取指定 Key 的 String 值，并自动还原转义字符。
+ * 
+ * @param text 正在吐流的原始文本（残缺 JSON）
+ * @param key 需要提取的属性键名（例如 "summary" 或 "stance"）
+ */
+export function extractStreamingJsonKey(text: string, key: string): string {
+  if (!text) return "";
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) {
+    return text; // 退化情况：非 JSON 结构直接透传
+  }
+
+  // 动态构造匹配键的正则，支持单/双引号及空格：如 "summary"\s*:\s*"
+  const keyPattern = new RegExp(`["']${key}["']\\s*:\\s*["']`);
+  const match = trimmed.match(keyPattern);
+  if (!match) return "";
+
+  const startIdx = (match.index ?? 0) + match[0].length;
+  let endIdx = -1;
+  let escape = false;
+
+  // 扫描寻找该属性值字符串的结束双引号（排除转义引号）
+  for (let i = startIdx; i < trimmed.length; i++) {
+    const char = trimmed[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      endIdx = i;
+      break;
+    }
+  }
+
+  let rawValue = "";
+  if (endIdx !== -1) {
+    rawValue = trimmed.substring(startIdx, endIdx);
+  } else {
+    rawValue = trimmed.substring(startIdx);
+    if (rawValue.endsWith("\\")) {
+      rawValue = rawValue.slice(0, -1); // 保护正在吐出中的转义斜杠
+    }
+  }
+
+  // 还原转义字符，保证 Markdown 换行及符号正常渲染
+  return rawValue
+    .replace(/\\n/g, "\n")
+    .replace(/\\"/g, '"')
+    .replace(/\\t/g, "\t")
+    .replace(/\\\\/g, "\\");
+}
+
+/**
+ * 判断正在吐流的残破 JSON 文本中，指定 key 的字符串值是否已经输出完毕并成功闭合。
+ * 
+ * @param text 正在吐流的原始文本（残损 JSON）
+ * @param key 属性键名
+ */
+export function isStreamingJsonKeyClosed(text: string, key: string): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) {
+    return false;
+  }
+
+  const keyPattern = new RegExp(`["']${key}["']\\s*:\\s*["']`);
+  const match = trimmed.match(keyPattern);
+  if (!match) return false;
+
+  const startIdx = (match.index ?? 0) + match[0].length;
+  let escape = false;
+
+  for (let i = startIdx; i < trimmed.length; i++) {
+    const char = trimmed[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      return true; // 找到了闭合的引号，说明该 key 已经读取完毕了
+    }
+  }
+  return false;
+}

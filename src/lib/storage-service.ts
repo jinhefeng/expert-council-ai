@@ -62,6 +62,9 @@ export const DEFAULT_LLM_PARAMS: LLMParamsConfig = {
   nextSpeakerTemperature: 0.1,
   maxAutonomousRounds: 3,
   autonomousCountdownSeconds: 10,
+  streamInactiveTimeoutSeconds: 30,
+  expertFirstCharTimeoutSeconds: 90,
+  expertStreamTimeoutSeconds: 45,
 };
 
 export const DEFAULT_SYSTEM_PROMPTS: SystemPromptsConfig = {

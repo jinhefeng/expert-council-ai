@@ -854,6 +854,43 @@ export async function getInquiryDecision({
 }
 
 // 6. 生成可供抉择的方向性意见选项
+function extractJSONArrayString(text: string): string | null {
+  const startIdx = text.indexOf('[');
+  if (startIdx === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let isEscaped = false;
+
+  for (let i = startIdx; i < text.length; i++) {
+    const char = text[i];
+
+    if (inString) {
+      if (char === "\\") {
+        isEscaped = !isEscaped;
+      } else if (char === '"' && !isEscaped) {
+        inString = false;
+      } else {
+        isEscaped = false;
+      }
+    } else {
+      if (char === '"') {
+        inString = true;
+        isEscaped = false;
+      } else if (char === '[') {
+        depth++;
+      } else if (char === ']') {
+        depth--;
+        if (depth === 0) {
+          return text.substring(startIdx, i + 1);
+        }
+      }
+    }
+  }
+
+  return text.substring(startIdx);
+}
+
 export async function getDecisionOptions({
   question,
   projectContext = "",
@@ -900,11 +937,9 @@ export async function getDecisionOptions({
   try {
     const rawText = responseText.trim();
     const cleanedText = rawText.replace(/```json/g, "").replace(/```/g, "").trim();
-    const firstBracket = cleanedText.indexOf('[');
-    const lastBracket = cleanedText.lastIndexOf(']');
-    if (firstBracket !== -1 && lastBracket !== -1 && lastBracket >= firstBracket) {
-      const jsonString = cleanedText.substring(firstBracket, lastBracket + 1);
-      const parsed = JSON.parse(jsonString);
+    const extracted = extractJSONArrayString(cleanedText);
+    if (extracted) {
+      const parsed = cleanAndParseJson<any>(extracted);
       if (Array.isArray(parsed)) {
         return parsed.map(item => String(item).trim());
       }

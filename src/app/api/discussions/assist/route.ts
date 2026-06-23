@@ -1,5 +1,15 @@
 import { callLLM, getSystemEngine } from "@/lib/model-router";
 
+function cleanThinkText(text: string): string {
+  if (!text) return "";
+  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  const thinkIdx = cleaned.indexOf("<think>");
+  if (thinkIdx !== -1) {
+    cleaned = cleaned.substring(0, thinkIdx);
+  }
+  return cleaned.trim();
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -58,12 +68,17 @@ export async function POST(request: Request) {
       maxTokens: 2048,
     });
 
+    if (task === "meeting_description") {
+      return Response.json({ result: cleanThinkText(responseText) });
+    }
+
     if (task === "expert_details") {
       try {
-        const firstBrace = responseText.indexOf('{');
-        const lastBrace = responseText.lastIndexOf('}');
+        const cleaned = cleanThinkText(responseText);
+        const firstBrace = cleaned.indexOf('{');
+        const lastBrace = cleaned.lastIndexOf('}');
         if (firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
-          const jsonString = responseText.substring(firstBrace, lastBrace + 1);
+          const jsonString = cleaned.substring(firstBrace, lastBrace + 1);
           const jsonResponse = JSON.parse(jsonString);
           return Response.json({ result: jsonResponse });
         } else {

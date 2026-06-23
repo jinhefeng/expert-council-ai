@@ -215,6 +215,8 @@ export default function Home() {
     reject: (err: any) => void;
   } | null>(null);
 
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
 
 
   // 自定义模型配置表单
@@ -380,6 +382,8 @@ export default function Home() {
   }, [meetings, activeMeetingId]);
 
   const isSessionActive = activeMeetingId ? (!!discussingMeetings[activeMeetingId] || !!generatingConclusions[activeMeetingId]) : false;
+  const isSessionPaused = activeMeetingId ? (inquiryConsoleMeetingId === activeMeetingId || steeringConsoleMeetingId === activeMeetingId) : false;
+  const isControlsDisabled = isSessionActive && !isSessionPaused;
 
   // 自主决策倒计时定时器管理
   useEffect(() => {
@@ -1103,12 +1107,13 @@ export default function Home() {
 
         const resetKeepAliveTimeout = () => {
           cleanupTimeout();
+          const streamTimeoutSeconds = llmParams?.expertStreamTimeoutSeconds ?? 45;
           timeoutId = setTimeout(() => {
             cleanupTimeout();
             delete wsResolversRef.current[expert.id];
             signal.removeEventListener("abort", onAbort);
-            reject(new Error(`外部智能体 [${expert.name}] 发言断流超时：已超过 45 秒未收到后续文本，流程自动跳过。`));
-          }, 45000);
+            reject(new Error(`外部智能体 [${expert.name}] 发言断流超时：已超过 ${streamTimeoutSeconds} 秒未收到后续文本，流程自动跳过。`));
+          }, streamTimeoutSeconds * 1000);
         };
 
         const wrappedOnChunk = (text: string, isExtracting?: boolean) => {
@@ -1138,13 +1143,14 @@ export default function Home() {
         };
 
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          // 启动 90 秒首字无响应超时定时器
+          // 启动外部智能体首字无响应超时定时器
+          const firstCharTimeoutSeconds = llmParams?.expertFirstCharTimeoutSeconds ?? 90;
           timeoutId = setTimeout(() => {
             cleanupTimeout();
             delete wsResolversRef.current[expert.id];
             signal.removeEventListener("abort", onAbort);
-            reject(new Error(`外部智能体 [${expert.name}] 响应超时：已超过 90 秒无任何吐字回应，流程自动跳过。`));
-          }, 90000);
+            reject(new Error(`外部智能体 [${expert.name}] 响应超时：已超过 ${firstCharTimeoutSeconds} 秒无任何吐字回应，流程自动跳过。`));
+          }, firstCharTimeoutSeconds * 1000);
 
           wsRef.current.send(JSON.stringify({
             type: "request_turn",
@@ -1206,50 +1212,79 @@ export default function Home() {
       let isNativeReasoning = false;
       let hasClosedNativeReasoning = false;
       
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("data: ") && line !== "data: [DONE]") {
-            try {
-              const data = JSON.parse(line.slice(6));
-              const deltaObj = data.choices[0]?.delta;
-              const reasoningChunk = deltaObj?.reasoning_content || deltaObj?.reasoning || deltaObj?.thought;
-              const contentChunk = deltaObj?.content;
+      const onAbort = () => {
+        reader.cancel().catch(() => {});
+      };
+      signal.addEventListener("abort", onAbort);
 
-              if (reasoningChunk) {
-                if (!isNativeReasoning) {
-                  fullContent += "<think>\n";
-                  isNativeReasoning = true;
-                }
-                fullContent += reasoningChunk;
-              }
+      let lastActiveTime = Date.now();
+      const inactiveTimeoutSeconds = llmParams?.streamInactiveTimeoutSeconds ?? 30;
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastActiveTime > inactiveTimeoutSeconds * 1000) {
+          console.warn(`[Watchdog] Expert turn stream inactive for ${inactiveTimeoutSeconds}s, canceling reader...`);
+          clearInterval(watchdog);
+          reader.cancel().catch(() => {});
+        }
+      }, 5000);
 
-              if (contentChunk) {
-                if (isNativeReasoning && !hasClosedNativeReasoning) {
-                  fullContent += "\n</think>\n";
-                  hasClosedNativeReasoning = true;
-                }
-                fullContent += contentChunk;
-              }
+      try {
+        let shouldFinish = false;
+        while (true) {
+          if (shouldFinish) break;
+          const { done, value } = await reader.read();
+          if (done) break;
 
-              const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
-              if (onChunk) {
-                if (isInsideReasoning) {
-                  onChunk(fullContent, false);
-                } else {
-                  const cleaned = cleanStreamingJson(fullContent);
-                  const isExtracting = (fullContent.includes("<think>") && !fullContent.includes("</think>"))
-                    ? false
-                    : cleaned.length < fullContent.trim().length;
-                  onChunk(cleaned, isExtracting);
+          lastActiveTime = Date.now();
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+          for (const line of lines) {
+            if (line === "data: [DONE]") {
+              shouldFinish = true;
+              break;
+            }
+            if (line.startsWith("data: ") && line !== "data: [DONE]") {
+              try {
+                const data = JSON.parse(line.slice(6));
+                const deltaObj = data.choices[0]?.delta;
+                const reasoningChunk = deltaObj?.reasoning_content || deltaObj?.reasoning || deltaObj?.thought;
+                const contentChunk = deltaObj?.content;
+
+                if (reasoningChunk) {
+                   if (!isNativeReasoning) {
+                     fullContent += "<think>\n";
+                     isNativeReasoning = true;
+                   }
+                   fullContent += reasoningChunk;
                 }
-              }
-            } catch (e) {}
+
+                if (contentChunk) {
+                  if (isNativeReasoning && !hasClosedNativeReasoning) {
+                    fullContent += "\n</think>\n";
+                    hasClosedNativeReasoning = true;
+                  }
+                  fullContent += contentChunk;
+                }
+
+                const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
+                if (onChunk) {
+                  if (isInsideReasoning) {
+                    onChunk(fullContent, false);
+                  } else {
+                    const cleaned = cleanStreamingJson(fullContent);
+                    const isExtracting = (fullContent.includes("<think>") && !fullContent.includes("</think>"))
+                      ? false
+                      : cleaned.length < fullContent.trim().length;
+                    onChunk(cleaned, isExtracting);
+                  }
+                }
+              } catch (e) {}
+            }
           }
         }
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        clearInterval(watchdog);
       }
       
       return extractAndCleanJson(fullContent, expert.name, expert.title);
@@ -1331,45 +1366,80 @@ export default function Home() {
       let isNativeReasoning = false;
       let hasClosedNativeReasoning = false;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("data: ") && line !== "data: [DONE]") {
-            try {
-              const data = JSON.parse(line.slice(6));
-              const reasoningChunk = data.choices[0]?.delta?.reasoning_content;
-              const contentChunk = data.choices[0]?.delta?.content;
+      const onAbort = () => {
+        reader.cancel().catch(() => {});
+      };
+      signal.addEventListener("abort", onAbort);
 
-              if (reasoningChunk) {
-                if (!isNativeReasoning) {
-                  fullContent += "<think>\n";
-                  isNativeReasoning = true;
-                }
-                fullContent += reasoningChunk;
-              }
+      let lastActiveTime = Date.now();
+      const inactiveTimeoutSeconds = llmParams?.streamInactiveTimeoutSeconds ?? 30;
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastActiveTime > inactiveTimeoutSeconds * 1000) {
+          console.warn(`[Watchdog] Synthesis stream inactive for ${inactiveTimeoutSeconds}s, canceling reader...`);
+          clearInterval(watchdog);
+          reader.cancel().catch(() => {});
+        }
+      }, 5000);
 
-              if (contentChunk) {
-                if (isNativeReasoning && !hasClosedNativeReasoning) {
-                  fullContent += "\n</think>\n";
-                  hasClosedNativeReasoning = true;
-                }
-                fullContent += contentChunk;
-              }
+      try {
+        let shouldFinish = false;
+        while (true) {
+          if (shouldFinish) break;
+          const { done, value } = await reader.read();
+          if (done) break;
 
-              const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
-              if (onChunk) {
-                if (isInsideReasoning) {
-                  onChunk(fullContent);
-                } else {
-                  onChunk(cleanStreamingJson(fullContent));
+          lastActiveTime = Date.now();
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+          for (const line of lines) {
+            if (line === "data: [DONE]") {
+              shouldFinish = true;
+              break;
+            }
+            if (line.startsWith("data: ") && line !== "data: [DONE]") {
+              try {
+                const data = JSON.parse(line.slice(6));
+                const reasoningChunk = data.choices[0]?.delta?.reasoning_content;
+                const contentChunk = data.choices[0]?.delta?.content;
+
+                if (reasoningChunk) {
+                  if (!isNativeReasoning) {
+                    fullContent += "<think>\n";
+                    isNativeReasoning = true;
+                  }
+                  fullContent += reasoningChunk;
                 }
-              }
-            } catch (e) {}
+
+                if (contentChunk) {
+                  if (isNativeReasoning && !hasClosedNativeReasoning) {
+                    fullContent += "\n</think>\n";
+                    hasClosedNativeReasoning = true;
+                  }
+                  fullContent += contentChunk;
+                }
+
+                const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
+                if (onChunk) {
+                  if (isInsideReasoning) {
+                    onChunk(fullContent);
+                  } else {
+                    onChunk(cleanStreamingJson(fullContent));
+                  }
+                }
+              } catch (e) {}
+            }
           }
         }
+      } catch (err: any) {
+        if (err.name === "AbortError" || signal.aborted || err.message?.toLowerCase().includes("abort")) {
+          console.log("Synthesis stream reading aborted safely.");
+        } else {
+          throw err;
+        }
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        clearInterval(watchdog);
       }
 
       try {
@@ -1560,7 +1630,10 @@ export default function Home() {
     const signal = controller.signal;
 
     // 获取参会的专家
-    const selectedExperts = allExperts.filter(e => targetMeeting.expertIds.includes(e.id));
+    const getSelectedExperts = () => {
+      const latestM = meetingsRef.current.find(m => m.id === targetMeetingId) || currentMeeting;
+      return allExpertsRef.current.filter(e => latestM.expertIds.includes(e.id));
+    };
     const meetingContextStr = `会议名称：${targetMeeting.name}\n会议背景与描述：${targetMeeting.description}`;
     const contextStr = [meetingContextStr, projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
@@ -1574,6 +1647,10 @@ export default function Home() {
       const latestM = meetingsRef.current.find(m => m.id === targetMeetingId) || nextMeeting;
       const updatedMeeting = {
         ...nextMeeting,
+        expertIds: latestM.expertIds,
+        moderatorId: latestM.moderatorId,
+        turnOrderMode: latestM.turnOrderMode,
+        globalDebateIntensity: latestM.globalDebateIntensity,
         moderatorAutonomy: latestM.moderatorAutonomy,
         enableInquiryLoop: latestM.enableInquiryLoop,
       };
@@ -1585,7 +1662,7 @@ export default function Home() {
 
     try {
       // 如果没有勾选任何参会专家，直接跑主持人总结
-      if (selectedExperts.length === 0) {
+      if (getSelectedExperts().length === 0) {
         setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
         
         const modMessageId = `msg-${Date.now()}-mod`;
@@ -1659,7 +1736,7 @@ export default function Home() {
       const discussionDecisions: string[] = [];
 
       // 自动排除处于离线状态的外部智能体
-      let initialCandidates = selectedExperts.filter(e => {
+      let initialCandidates = getSelectedExperts().filter(e => {
         if (e.isExternalAgent) {
           return botStatuses[e.id] === "online";
         }
@@ -1672,10 +1749,14 @@ export default function Home() {
       meetingLoop: while (true) {
         if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-        // 每次迭代前同步获取最新的侧边栏主持模式与信息追问设置，防止在大循环运行时修改无效
+        // 每次迭代前同步获取最新的侧边栏各项控制胶囊及专家席位设置，防止在大循环运行时修改无效
         const latestLoopM = meetingsRef.current.find(m => m.id === targetMeetingId) || currentMeeting;
+        currentMeeting.expertIds = latestLoopM.expertIds;
+        currentMeeting.moderatorId = latestLoopM.moderatorId;
+        currentMeeting.turnOrderMode = latestLoopM.turnOrderMode;
         currentMeeting.moderatorAutonomy = latestLoopM.moderatorAutonomy;
         currentMeeting.enableInquiryLoop = latestLoopM.enableInquiryLoop;
+        currentMeeting.globalDebateIntensity = latestLoopM.globalDebateIntensity;
 
         // ================= 前置：信息澄清与追问判断流程 (Step 1 to Step 5) =================
         if (currentMeeting.enableInquiryLoop) {
@@ -2054,7 +2135,7 @@ export default function Home() {
               activeQuestion = selectedOpinion;
               currentRound++;
               previousTurns.length = 0;
-              nextRoundCandidates = selectedExperts.filter(e => {
+              nextRoundCandidates = getSelectedExperts().filter(e => {
                 if (e.isExternalAgent) return botStatuses[e.id] === "online";
                 return true;
               });
@@ -2077,7 +2158,8 @@ export default function Home() {
       }
 
     } catch (e: any) {
-      if (e.name === "AbortError" || signal.aborted) {
+      const isAbort = e.name === "AbortError" || signal.aborted || e.message?.toLowerCase().includes("abort");
+      if (isAbort) {
         // 叫停处理
         setInquiryConsoleMeetingId(null);
         setInquiryPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
@@ -2599,9 +2681,9 @@ export default function Home() {
                 className="btn-create-meeting"
                 type="button"
                 onClick={openCustomModal}
-                title={activeMeetingId ? "新建会议专属智能体" : "请先选择或创建会议"}
-                disabled={!activeMeetingId}
-                style={{ opacity: !activeMeetingId ? 0.5 : 1, cursor: !activeMeetingId ? "not-allowed" : "pointer" }}
+                title={!activeMeetingId ? "请先选择或创建会议" : (isControlsDisabled ? "发言进行中，无法新建智能体" : "新建会议专属智能体")}
+                disabled={!activeMeetingId || isControlsDisabled}
+                style={{ opacity: (!activeMeetingId || isControlsDisabled) ? 0.5 : 1, cursor: (!activeMeetingId || isControlsDisabled) ? "not-allowed" : "pointer" }}
               >
                 +
               </button>
@@ -2616,13 +2698,15 @@ export default function Home() {
                   return (
                     <div
                       key={expert.id}
-                      className={`role-card ${isSelected ? "is-selected" : ""} ${isSpeaking ? "is-speaking" : ""} ${expert.isExternalAgent ? "is-external-agent" : ""}`}
+                      className={`role-card ${isSelected ? "is-selected" : ""} ${isSpeaking ? "is-speaking" : ""} ${expert.isExternalAgent ? "is-external-agent" : ""} ${isControlsDisabled ? "is-disabled" : ""}`}
+                      style={{ opacity: isControlsDisabled ? 0.6 : 1, transition: "opacity 0.2s" }}
                     >
                       <div className="role-toggle">
                         <div 
                           className="role-topline" 
-                          style={{ cursor: "pointer" }}
+                          style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer" }}
                           onClick={() => {
+                            if (isControlsDisabled) return;
                             if (!activeMeeting) return;
                             const ids = isSelected
                               ? activeMeeting.expertIds.filter(id => id !== expert.id)
@@ -2698,7 +2782,8 @@ export default function Home() {
                               min="1"
                               max="5"
                               value={expert.debateIntensity}
-                              disabled={activeMeetingId ? discussingMeetings[activeMeetingId] : false}
+                              disabled={isControlsDisabled}
+                              style={{ cursor: isControlsDisabled ? "not-allowed" : "auto" }}
                               onChange={async (e) => {
                                 const val = Number(e.target.value);
                                 if (expert.isCustom) {
@@ -2738,15 +2823,26 @@ export default function Home() {
                           <button
                             className="text-button"
                             type="button"
-                            onClick={() => openEditCustomModal(expert)}
-                            style={{ color: "var(--amber)" }}
+                            onClick={() => !isControlsDisabled && openEditCustomModal(expert)}
+                            disabled={isControlsDisabled}
+                            style={{ 
+                              color: isControlsDisabled ? "var(--muted)" : "var(--amber)", 
+                              cursor: isControlsDisabled ? "not-allowed" : "pointer",
+                              opacity: isControlsDisabled ? 0.5 : 1
+                            }}
                           >
                             编辑
                           </button>
                           <button
                             className="text-button"
                             type="button"
-                            onClick={() => setDeleteCandidate(expert)}
+                            onClick={() => !isControlsDisabled && setDeleteCandidate(expert)}
+                            disabled={isControlsDisabled}
+                            style={{ 
+                              color: isControlsDisabled ? "var(--muted)" : "inherit", 
+                              cursor: isControlsDisabled ? "not-allowed" : "pointer",
+                              opacity: isControlsDisabled ? 0.5 : 1
+                            }}
                           >
                             删除
                           </button>
@@ -2881,7 +2977,7 @@ export default function Home() {
 
 
 
-            {assigningNextSpeaker[activeMeetingId] && (
+            {discussingMeetings[activeMeetingId] && assigningNextSpeaker[activeMeetingId] && (
               <article className="chat-message moderator">
                 <div className="message-avatar">主持</div>
                 <div className="message-body">
@@ -2900,7 +2996,7 @@ export default function Home() {
             )}
 
 
-            {inquiryPendingMeetings[activeMeetingId] && (
+            {discussingMeetings[activeMeetingId] && inquiryPendingMeetings[activeMeetingId] && (
               <article className="chat-message moderator">
                 <div className="message-avatar">主持</div>
                 <div className="message-body">
@@ -2921,7 +3017,7 @@ export default function Home() {
               </article>
             )}
 
-            {generatingDecisionOptions[activeMeetingId] && (
+            {discussingMeetings[activeMeetingId] && generatingDecisionOptions[activeMeetingId] && (
               <article className="chat-message moderator">
                 <div className="message-avatar">主持</div>
                 <div className="message-body">
@@ -3045,115 +3141,188 @@ export default function Home() {
                     )}
 
                     {/* 方向性决策选项单选卡片列表 */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "20px" }}>
-                      {(meetingDecisionOptions[activeMeeting.id] || []).map((option, idx) => {
-                        const isSelected = selectedDecisionOption === option;
-                        return (
-                          <div
-                            key={idx}
-                            onClick={() => {
-                              setSelectedDecisionOption(isSelected ? "" : option);
-                            }}
-                            style={{
-                              padding: "14px 18px",
-                              borderRadius: "10px",
-                              border: `1.5px solid ${isSelected ? "var(--amber)" : "var(--line)"}`,
-                              background: isSelected ? "var(--amber-soft)" : "rgba(255, 255, 255, 0.4)",
-                              boxShadow: isSelected ? "0 4px 16px rgba(180, 110, 10, 0.08)" : "none",
-                              color: isSelected ? "#854d0e" : "var(--ink)",
-                              fontSize: "13.5px",
-                              fontWeight: isSelected ? 600 : 500,
-                              lineHeight: "1.5",
-                              cursor: "pointer",
-                              transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)"
-                            }}
-                          >
-                            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                              <span style={{
-                                width: "16px",
-                                height: "16px",
-                                borderRadius: "50%",
-                                border: "1px solid var(--muted-light)",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                background: "var(--surface)",
-                                flexShrink: 0
-                              }}>
-                                {isSelected && <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--amber)" }} />}
-                              </span>
-                              <span>{option}</span>
-                            </div>
+                    {(() => {
+                      const isCustomInputActive = steeringInput.trim().length > 0;
+                      return (
+                        <>
+                          <div style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: "10px",
+                            marginBottom: "20px",
+                            opacity: isCustomInputActive ? 0.4 : 1,
+                            pointerEvents: isCustomInputActive ? "none" : "auto",
+                            transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)"
+                          }}>
+                            {(meetingDecisionOptions[activeMeeting.id] || []).map((option, idx) => {
+                              const isSelected = selectedDecisionOption === option;
+                              return (
+                                <div
+                                  key={idx}
+                                  onClick={() => {
+                                    setSelectedDecisionOption(isSelected ? "" : option);
+                                  }}
+                                  style={{
+                                    padding: "14px 18px",
+                                    borderRadius: "10px",
+                                    border: `1.5px solid ${isSelected ? "var(--amber)" : "var(--line)"}`,
+                                    background: isSelected ? "var(--amber-soft)" : "rgba(255, 255, 255, 0.4)",
+                                    boxShadow: isSelected ? "0 4px 16px rgba(180, 110, 10, 0.08)" : "none",
+                                    color: isSelected ? "#854d0e" : "var(--ink)",
+                                    fontSize: "13.5px",
+                                    fontWeight: isSelected ? 600 : 500,
+                                    lineHeight: "1.5",
+                                    cursor: "pointer",
+                                    transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)"
+                                  }}
+                                >
+                                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                    <span style={{
+                                      width: "16px",
+                                      height: "16px",
+                                      borderRadius: "50%",
+                                      border: "1px solid var(--muted-light)",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      background: "var(--surface)",
+                                      flexShrink: 0
+                                    }}>
+                                      {isSelected && <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--amber)" }} />}
+                                    </span>
+                                    <span>{option}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
-                        );
-                      })}
-                    </div>
 
-                    <div className="compact-field" style={{ marginBottom: "16px" }}>
-                      <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--muted)", display: "block", marginBottom: "8px" }}>
-                        ✍️ 补充额外决策指令或修正说明（可单独输入，或与上方选定的方向叠加）：
-                      </span>
-                      <textarea
-                        placeholder="在此手写您希望专家下一轮论证的补充背景、方案修改、或新决策意见..."
-                        value={steeringInput}
-                        onChange={e => setSteeringInput(e.target.value)}
-                        style={{
-                          width: "100%",
-                          minHeight: "80px",
-                          padding: "12px",
-                          borderRadius: "10px",
-                          border: "1px solid var(--line-strong)",
-                          background: "var(--surface)",
-                          fontSize: "13px",
-                          lineHeight: "1.5",
-                          outline: "none"
-                        }}
-                      />
-                    </div>
+                          {selectedDecisionOption && !isCustomInputActive && (
+                            <div style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              padding: "8px 12px",
+                              borderRadius: "8px",
+                              background: "var(--amber-soft)",
+                              border: "1px dashed rgba(245, 158, 11, 0.3)",
+                              marginBottom: "10px",
+                              fontSize: "12px",
+                              color: "#854d0e",
+                              animation: "fadeIn 0.2s ease-out"
+                            }}>
+                              <span>💡 想要在此方向上微调？</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSteeringInput(selectedDecisionOption);
+                                  setSelectedDecisionOption("");
+                                  textareaRef.current?.focus();
+                                }}
+                                style={{
+                                  padding: "3px 8px",
+                                  borderRadius: "4px",
+                                  background: "var(--amber)",
+                                  color: "#fff",
+                                  border: "none",
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  cursor: "pointer",
+                                  transition: "background 0.2s"
+                                }}
+                              >
+                                ✍️ 导入下方编辑
+                              </button>
+                            </div>
+                          )}
 
-                    <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-                      <button
-                        type="button"
-                        className="ghost-button"
-                        onClick={() => {
-                          facilitativeResolverRef.current?.resolve({ type: "finish" });
-                          setSteeringInput("");
-                          setSelectedDecisionOption("");
-                        }}
-                        style={{ fontSize: "12.5px", padding: "8px 16px" }}
-                      >
-                        🏁 达成共识，结案陈词
-                      </button>
-                      <button
-                        type="button"
-                        className="primary-button"
-                        disabled={!selectedDecisionOption && !steeringInput.trim()}
-                        onClick={() => {
-                          let finalOpinion = "";
-                          if (steeringInput.trim()) {
-                            finalOpinion = selectedDecisionOption 
-                              ? `【在选定方向“${selectedDecisionOption}”上补充新指示】：\n${steeringInput.trim()}`
-                              : steeringInput.trim();
-                          } else {
-                            finalOpinion = selectedDecisionOption;
-                          }
-                          facilitativeResolverRef.current?.resolve({
-                            type: "choose",
-                            opinion: finalOpinion
-                          });
-                          setSteeringInput("");
-                          setSelectedDecisionOption("");
-                        }}
-                        style={{
-                          fontSize: "12.5px",
-                          padding: "8px 20px",
-                          background: "var(--amber)",
-                          borderColor: "var(--amber)"
-                        }}
-                      >
-                        🚀 提交并进入下一轮讨论
-                      </button>
-                    </div>
+                          <div className="compact-field" style={{ marginBottom: "16px" }}>
+                            <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--muted)", display: "block", marginBottom: "8px" }}>
+                              ✍️ 补充额外决策指令或修正说明：
+                            </span>
+                            <textarea
+                              ref={textareaRef}
+                              placeholder="在此手写您希望专家下一轮论证的补充背景、方案修改、或新决策意见..."
+                              value={steeringInput}
+                              onChange={e => {
+                                setSteeringInput(e.target.value);
+                                if (e.target.value.trim().length > 0) {
+                                  setSelectedDecisionOption("");
+                                }
+                              }}
+                              style={{
+                                width: "100%",
+                                minHeight: "80px",
+                                padding: "12px",
+                                borderRadius: "10px",
+                                border: "1px solid var(--line-strong)",
+                                background: "var(--surface)",
+                                fontSize: "13px",
+                                lineHeight: "1.5",
+                                outline: "none"
+                              }}
+                            />
+                          </div>
+
+                          <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => {
+                                if (window.confirm("确定要取消并终止本轮讨论吗？这将结束当前的专家圆桌会议，已有的讨论观点将被保留。")) {
+                                  handleAbort();
+                                  setSteeringInput("");
+                                  setSelectedDecisionOption("");
+                                }
+                              }}
+                              style={{
+                                fontSize: "12.5px",
+                                padding: "8px 16px",
+                                borderColor: "var(--red)",
+                                color: "var(--red)",
+                                background: "rgba(239, 68, 68, 0.05)"
+                              }}
+                            >
+                              ❌ 取消并终止讨论
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => {
+                                facilitativeResolverRef.current?.resolve({ type: "finish" });
+                                setSteeringInput("");
+                                setSelectedDecisionOption("");
+                              }}
+                              style={{ fontSize: "12.5px", padding: "8px 16px" }}
+                            >
+                              🏁 达成共识，结案陈词
+                            </button>
+                            <button
+                              type="button"
+                              className="primary-button"
+                              disabled={!selectedDecisionOption && !steeringInput.trim()}
+                              onClick={() => {
+                                const finalOpinion = steeringInput.trim() || selectedDecisionOption;
+                                facilitativeResolverRef.current?.resolve({
+                                  type: "choose",
+                                  opinion: finalOpinion
+                                });
+                                setSteeringInput("");
+                                setSelectedDecisionOption("");
+                              }}
+                              style={{
+                                fontSize: "12.5px",
+                                padding: "8px 20px",
+                                background: "var(--amber)",
+                                borderColor: "var(--amber)"
+                              }}
+                            >
+                              🚀 提交并进入下一轮讨论
+                            </button>
+                          </div>
+                        </>
+                      );
+                    })()}
                   </>
                 )}
               </div>
@@ -3412,9 +3581,9 @@ export default function Home() {
                         className="toolbar-select select-moderator"
                         value={activeMeeting.moderatorId}
                         onChange={(e) => void updateActiveMeeting({ moderatorId: e.target.value })}
-                        disabled={isSessionActive}
+                        disabled={isControlsDisabled}
                         title="主持风格"
-                        style={{ cursor: isSessionActive ? "not-allowed" : "pointer", opacity: isSessionActive ? 0.5 : 1 }}
+                        style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
                       >
                         {moderatorModes.map(m => (
                           <option key={m.id} value={m.id}>{m.name}</option>
@@ -3424,9 +3593,9 @@ export default function Home() {
                         className="toolbar-select select-moderator"
                         value={activeMeeting.turnOrderMode}
                         onChange={(e) => void updateActiveMeeting({ turnOrderMode: e.target.value as any })}
-                        disabled={isSessionActive}
+                        disabled={isControlsDisabled}
                         title="发言机制"
-                        style={{ cursor: isSessionActive ? "not-allowed" : "pointer", opacity: isSessionActive ? 0.5 : 1 }}
+                        style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
                       >
                         <option value="sequential">顺序发言</option>
                         <option value="relevance">动态指派</option>
@@ -3443,9 +3612,9 @@ export default function Home() {
                           }
                           void updateActiveMeeting(updates);
                         }}
-                        disabled={isSessionActive}
+                        disabled={isControlsDisabled}
                         title="主持模式"
-                        style={{ cursor: isSessionActive ? "not-allowed" : "pointer", opacity: isSessionActive ? 0.5 : 1 }}
+                        style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
                       >
                         <option value="passive">被动传统</option>
                         <option value="facilitative">协调引导</option>
@@ -3461,9 +3630,9 @@ export default function Home() {
                           className="toolbar-select select-inquiry"
                           value={activeMeeting.moderatorAutonomy === "autonomous" ? "false" : (activeMeeting.enableInquiryLoop ? "true" : "false")}
                           onChange={(e) => void updateActiveMeeting({ enableInquiryLoop: e.target.value === "true" })}
-                          disabled={activeMeeting.moderatorAutonomy === "autonomous" || isSessionActive}
+                          disabled={activeMeeting.moderatorAutonomy === "autonomous" || isControlsDisabled}
                           title="信息追问开关"
-                          style={{ cursor: (activeMeeting.moderatorAutonomy === "autonomous" || isSessionActive) ? "not-allowed" : "pointer", opacity: (activeMeeting.moderatorAutonomy === "autonomous" || isSessionActive) ? 0.5 : 1 }}
+                          style={{ cursor: (activeMeeting.moderatorAutonomy === "autonomous" || isControlsDisabled) ? "not-allowed" : "pointer", opacity: (activeMeeting.moderatorAutonomy === "autonomous" || isControlsDisabled) ? 0.5 : 1 }}
                         >
                           <option value="true">开启</option>
                           <option value="false">关闭</option>
@@ -3479,9 +3648,9 @@ export default function Home() {
                           className="toolbar-select select-intensity"
                           value={activeMeeting.globalDebateIntensity}
                           onChange={(e) => void updateActiveMeeting({ globalDebateIntensity: Number(e.target.value) })}
-                          disabled={isSessionActive}
+                          disabled={isControlsDisabled}
                           title="对抗强度"
-                          style={{ cursor: isSessionActive ? "not-allowed" : "pointer", opacity: isSessionActive ? 0.5 : 1 }}
+                          style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
                         >
                           <option value="1">1</option>
                           <option value="2">2</option>
@@ -3500,9 +3669,9 @@ export default function Home() {
                           className="toolbar-select select-engine" 
                           value={activeEngineId} 
                           onChange={(e) => void handleSelectEngine(e.target.value)}
-                          disabled={isSessionActive}
+                          disabled={isControlsDisabled}
                           title="选择模型引擎"
-                          style={{ cursor: isSessionActive ? "not-allowed" : "pointer", opacity: isSessionActive ? 0.5 : 1 }}
+                          style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
                         >
                           <option value="system-env">系统内置</option>
                           {engineConfigs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -3600,12 +3769,12 @@ export default function Home() {
               </div>
               <form onSubmit={handleConfirmCreateMeeting} style={{ padding: "0 24px" }}>
                 <label className="compact-field">
-                  <span>会议名称</span>
-                  <input required value={newMeetingDraft.name || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, name: e.target.value})} />
+                  <span>会议主题 / 议题名称</span>
+                  <input required placeholder="例如：核心支付接口防抖设计与重构方案" value={newMeetingDraft.name || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, name: e.target.value})} />
                 </label>
                 <label className="compact-field">
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                    <span style={{ marginBottom: 0 }}>会议描述 (核心议题上下文)</span>
+                    <span style={{ marginBottom: 0 }}>议题背景与核心上下文 (Context)</span>
                     <button
                       type="button"
                       onClick={handleGenerateMeetingDesc}
@@ -3620,14 +3789,14 @@ export default function Home() {
                       ✨ {isGeneratingMeetingDesc ? "生成中..." : "AI 自动完善"}
                     </button>
                   </div>
-                  <textarea style={{ minHeight: "80px" }} required value={newMeetingDraft.description || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, description: e.target.value})} />
+                  <textarea style={{ minHeight: "80px" }} required placeholder="在此输入该评审议题的背景、设计草案、核心代码或面临的技术疑难，以便 AI 专家进行精准评审..." value={newMeetingDraft.description || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, description: e.target.value})} />
                 </label>
                 <label className="compact-field">
-                  <span>全局辩论强度 (1-5)</span>
-                  <input type="number" min="1" max="5" required value={newMeetingDraft.globalDebateIntensity || 3} onChange={e => setNewMeetingDraft({...newMeetingDraft, globalDebateIntensity: parseInt(e.target.value)})} />
+                  <span>辩论激烈程度 (1-5)</span>
+                  <input type="number" min="1" max="5" required placeholder="默认等级为 3。值越高，专家之间的对抗与质疑越剧烈" value={newMeetingDraft.globalDebateIntensity || 3} onChange={e => setNewMeetingDraft({...newMeetingDraft, globalDebateIntensity: parseInt(e.target.value)})} />
                 </label>
                 <label className="compact-field">
-                  <span>流转模式</span>
+                  <span>发言流转机制</span>
                   <select required value={newMeetingDraft.turnOrderMode || "sequential"} onChange={e => setNewMeetingDraft({...newMeetingDraft, turnOrderMode: e.target.value as any})}>
                     <option value="sequential">顺序发言</option>
                     <option value="relevance">动态指派</option>
@@ -3635,7 +3804,7 @@ export default function Home() {
                   </select>
                 </label>
                 <label className="compact-field">
-                  <span>主持人自主度模式</span>
+                  <span>主持人决策模式</span>
                   <select 
                     required 
                     value={newMeetingDraft.moderatorAutonomy || "facilitative"} 
@@ -3654,7 +3823,7 @@ export default function Home() {
                   </select>
                 </label>
                 <label className="compact-field">
-                  <span>信息索取追问环 (Inquiry Switch)</span>
+                  <span>信息自动追问 (Inquiry)</span>
                   <select 
                     required 
                     value={newMeetingDraft.moderatorAutonomy === "autonomous" ? "false" : (newMeetingDraft.enableInquiryLoop ? "true" : "false")} 
@@ -3662,13 +3831,13 @@ export default function Home() {
                     disabled={newMeetingDraft.moderatorAutonomy === "autonomous"}
                     style={{ opacity: newMeetingDraft.moderatorAutonomy === "autonomous" ? 0.5 : 1 }}
                   >
-                    <option value="true">开启（当缺失上下文时自动追问补充）</option>
-                    <option value="false">关闭（忽略追问需求直接总结）</option>
+                    <option value="true">开启（当上下文缺失时由主持人追问澄清）</option>
+                    <option value="false">关闭（忽略不全信息，直接总结）</option>
                   </select>
                 </label>
                 <div className="modal-actions" style={{ padding: "24px 0", marginTop: "8px" }}>
                   <button type="button" className="ghost-button" onClick={() => setIsMeetingModalOpen(false)}>取消</button>
-                  <button type="submit" className="primary-button">{meetingModalMode === "create" ? "创建会议" : "保存修改"}</button>
+                  <button type="submit" className="primary-button">{meetingModalMode === "create" ? "创建评审圆桌" : "保存圆桌设置"}</button>
                 </div>
               </form>
             </section>
