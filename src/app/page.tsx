@@ -11,10 +11,14 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import { experts as defaultExperts, moderatorModes, mergeSystemExperts } from "@/lib/experts";
 import { ExpertModal } from "@/components/ExpertModal";
+import ChatMessageCard from "@/components/ChatMessageCard";
 import { LocalStorageService } from "@/lib/storage-service";
-import { extractAndCleanJson, cleanStreamingJson } from "@/lib/content-parser";
+import { extractAndCleanJson, cleanStreamingJson, cleanAndParseJson, beautifyListFormatting, extractInquiryPrompt } from "@/lib/content-parser";
 import {
   Expert,
   LLMEngineConfig,
@@ -28,6 +32,28 @@ import {
 } from "@/lib/types";
 
 const TENANT_ID = "default-org";
+
+const SYSTEM_LOADERS = {
+  "__WAKING__": {
+    title: "正在唤醒外部智能体",
+    subtitle: "正在载入历史对话上下文、附件并装载长记忆..."
+  },
+  "__COMPACTING__": {
+    title: "正在整理会议上下文记忆",
+    subtitle: "当前多轮对话超出模型窗口限制，正在网关执行有状态增量信息压缩..."
+  },
+  "__TIMEOUT__": {
+    title: "智能体发言已超时",
+    subtitle: "外部智能体响应已超出安全耗时阈值，系统已自动跳过该环节以保障会议流程连续性。",
+    isError: true
+  },
+  "__ERROR__": {
+    title: "智能体连接异常",
+    subtitle: "本地中继网关已断开，或该智能体连接已离线。请检查外部智能体服务状态。",
+    isError: true
+  }
+} as const;
+
 
 function ensureString(val: any): string {
   if (val === null || val === undefined) {
@@ -71,7 +97,7 @@ export default function Home() {
   const wsRef = useRef<WebSocket | null>(null);
   const wsResolversRef = useRef<Record<string, {
     text: string;
-    onChunk?: (text: string) => void;
+    onChunk?: (text: string, isExtracting?: boolean) => void;
     resolve: (res: { content: string; expertStance: any }) => void;
     reject: (err: Error) => void;
   }>>({});
@@ -155,6 +181,44 @@ export default function Home() {
   const [isEngineModalOpen, setIsEngineModalOpen] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<Expert | null>(null);
 
+  // --- 人类决策协调与反馈环挂起控制状态 ---
+  const [steeringConsoleMeetingId, setSteeringConsoleMeetingId] = useState<string | null>(null);
+  const [inquiryConsoleMeetingId, setInquiryConsoleMeetingId] = useState<string | null>(null);
+  const [inquiryPromptText, setInquiryPromptText] = useState<string>("");
+  const [steeringPendingMeetings, setSteeringPendingMeetings] = useState<Record<string, boolean>>({});
+  const [inquiryPendingMeetings, setInquiryPendingMeetings] = useState<Record<string, boolean>>({});
+  const [steeringInput, setSteeringInput] = useState("");
+  const [inquiryInput, setInquiryInput] = useState("");
+  
+  // 决策方向性意见状态
+  const [meetingDecisionOptions, setMeetingDecisionOptions] = useState<Record<string, string[]>>({});
+  const [generatingDecisionOptions, setGeneratingDecisionOptions] = useState<Record<string, boolean>>({});
+  const [selectedDecisionOption, setSelectedDecisionOption] = useState<string>("");
+  const [steeringCountdown, setSteeringCountdown] = useState<number | null>(null);
+  const countdownTimerRef = useRef<any>(null);
+
+  const handleCancelSteeringCountdown = () => {
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+      setSteeringCountdown(null);
+    }
+  };
+
+  const facilitativeResolverRef = useRef<{
+    resolve: (action: { type: "choose" | "finish"; opinion?: string }) => void;
+    reject: (err: any) => void;
+  } | null>(null);
+
+  const inquiryResolverRef = useRef<{
+    resolve: (action: { type: "skip" | "submit"; content?: string }) => void;
+    reject: (err: any) => void;
+  } | null>(null);
+
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+
+
   // 自定义模型配置表单
   const [engineDraft, setEngineDraft] = useState<LLMEngineConfig>({
     id: "",
@@ -175,6 +239,12 @@ export default function Home() {
   const scrollPositions = useRef<Record<string, number>>({});
   const prevMeetingIdRef = useRef<string | null>(null);
   const isAutoScrollEnabled = useRef<boolean>(true);
+
+  const meetingsRef = useRef<Meeting[]>([]);
+  const lastScrollTimeRef = useRef<number>(0);
+  useEffect(() => {
+    meetingsRef.current = meetings;
+  }, [meetings]);
 
   const handleThreadScroll = () => {
     if (!chatThreadRef.current) return;
@@ -263,6 +333,9 @@ export default function Home() {
           createdAt: Date.now(),
           updatedAt: Date.now(),
           messages: [],
+          moderatorAutonomy: "facilitative",
+          enableInquiryLoop: true,
+          decisionState: "pending",
         };
         await storage.saveMeeting(TENANT_ID, defaultMeeting);
         setMeetings([defaultMeeting]);
@@ -298,12 +371,74 @@ export default function Home() {
   const allExperts = useMemo(() => {
     // 过滤出系统专家、全局级专家(!meetingId) 以及当前会议专属专家
     const availableCustom = customExperts.filter(e => !e.meetingId || e.meetingId === activeMeetingId);
-    return [...systemExperts, ...availableCustom];
+    // 防御性排重：当自定义专家ID与内置专家重复时以内置（含覆写）专家为准，防止 React Key 重复警告
+    const systemIds = new Set(systemExperts.map(e => e.id));
+    const uniqueCustom = availableCustom.filter(e => !systemIds.has(e.id));
+    return [...systemExperts, ...uniqueCustom];
   }, [systemExperts, customExperts, activeMeetingId]);
 
   const activeMeeting = useMemo(() => {
     return meetings.find(m => m.id === activeMeetingId);
   }, [meetings, activeMeetingId]);
+
+  const isSessionActive = activeMeetingId ? (!!discussingMeetings[activeMeetingId] || !!generatingConclusions[activeMeetingId]) : false;
+  const isSessionPaused = activeMeetingId ? (inquiryConsoleMeetingId === activeMeetingId || steeringConsoleMeetingId === activeMeetingId) : false;
+  const isControlsDisabled = isSessionActive && !isSessionPaused;
+
+  // 自主决策倒计时定时器管理
+  useEffect(() => {
+    if (steeringConsoleMeetingId && activeMeeting && activeMeeting.moderatorAutonomy === "autonomous") {
+      const defaultSecs = llmParams?.autonomousCountdownSeconds ?? 10;
+      setSteeringCountdown(defaultSecs);
+
+      let currentSecs = defaultSecs;
+      countdownTimerRef.current = setInterval(() => {
+        currentSecs--;
+        if (currentSecs <= 0) {
+          if (countdownTimerRef.current) {
+            clearInterval(countdownTimerRef.current);
+            countdownTimerRef.current = null;
+          }
+          setSteeringCountdown(null);
+
+          // 自动选择第一个选项并推进
+          const options = meetingDecisionOptions[activeMeeting.id] || [];
+          const autoOpinion = options[0] || "方向一：维持现状，进一步观测和评估指标细节";
+          
+          facilitativeResolverRef.current?.resolve({
+            type: "choose",
+            opinion: autoOpinion
+          });
+        } else {
+          setSteeringCountdown(currentSecs);
+        }
+      }, 1000);
+    } else {
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
+      setSteeringCountdown(null);
+    }
+
+    return () => {
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
+    };
+  }, [steeringConsoleMeetingId, activeMeeting?.id, activeMeeting?.moderatorAutonomy, meetingDecisionOptions, llmParams?.autonomousCountdownSeconds]);
+
+  // 决策面板滚动对齐：面板渲染后自动滚到可视区顶部
+  useEffect(() => {
+    if (steeringConsoleMeetingId && activeMeeting && steeringConsoleMeetingId === activeMeeting.id) {
+      const timer = setTimeout(() => {
+        document.getElementById("steering-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [steeringConsoleMeetingId, activeMeeting?.id]);
+
 
   const sortedMeetings = useMemo(() => {
     return [...meetings].sort((a, b) => {
@@ -376,25 +511,61 @@ export default function Home() {
             case "stream_chunk":
               const resolver = wsResolversRef.current[message.expertId];
               if (resolver) {
+                // 终极解耦：直接追加大模型返回的发言文本，无需任何模糊或特定关键字判断
                 resolver.text += message.chunk;
                 if (resolver.onChunk) {
                   if (message.isThought) {
-                    resolver.onChunk(resolver.text);
+                    resolver.onChunk(resolver.text, false);
                   } else {
-                    resolver.onChunk(cleanStreamingJson(resolver.text));
+                    const cleaned = cleanStreamingJson(resolver.text);
+                    const isExtracting = (resolver.text.includes("<think>") && !resolver.text.includes("</think>"))
+                      ? false
+                      : cleaned.length < resolver.text.trim().length;
+                    resolver.onChunk(cleaned, isExtracting);
                   }
                 }
               }
               break;
 
+            case "stream_compaction_pending":
+              // 收到网关发来的上下文压缩挂起通知，展示过渡等待信息，防范用户误以为系统卡死
+              const pendingResolver = wsResolversRef.current[message.expertId];
+              if (pendingResolver) {
+                pendingResolver.text = ""; // 将正在累加的文本重置为空，等待新发言
+                if (pendingResolver.onChunk) {
+                  pendingResolver.onChunk("__COMPACTING__");
+                }
+              }
+              break;
+
             case "stream_done":
+              // 解决方案 2 的前端自适应相对路径补录双保险
+              if (message.botRequestPayload) {
+                const curExpert = allExpertsRef.current.find(e => e.id === message.expertId);
+                const curExpertName = curExpert ? curExpert.name : "未知专家";
+                const token = curExpert?.botToken || "";
+                void fetch("/api/prompt-logs", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    type: "external_bot",
+                    target: `外部专家响应 (前端补录): ${curExpertName}`,
+                    modelOrToken: token ? token.substring(0, Math.min(12, token.length)) + "..." : "Unknown Token",
+                    botRequestPayload: message.botRequestPayload,
+                    systemPrompt: "外部大模型系统指令 (由Python端编译组装)",
+                    userPrompt: message.botRequestPayload
+                  })
+                }).catch(() => {});
+              }
+
               const doneResolver = wsResolversRef.current[message.expertId];
               if (doneResolver) {
                 const curExpert = allExpertsRef.current.find(e => e.id === message.expertId);
                 const curExpertName = curExpert ? curExpert.name : "";
+                const curExpertTitle = curExpert ? curExpert.title : "";
                 
                 // 强制对最终发言内容进行清洗，剪除尾部 JSON 卡片，确保历史正文完美呈现
-                const cleaned = extractAndCleanJson(doneResolver.text, curExpertName);
+                const cleaned = extractAndCleanJson(doneResolver.text, curExpertName, curExpertTitle);
                 const content = cleaned.content;
                 const expertStance = message.expertStance || cleaned.expertStance;
 
@@ -409,7 +580,21 @@ export default function Home() {
             case "stream_error":
               const errResolver = wsResolversRef.current[message.expertId];
               if (errResolver) {
-                errResolver.reject(new Error(message.error));
+                const curExpert = allExpertsRef.current.find(e => e.id === message.expertId);
+                const curExpertName = curExpert ? curExpert.name : "";
+                const curExpertTitle = curExpert ? curExpert.title : "";
+                
+                // 如果已经有部分大模型发言吐字，执行容错自愈，将其转换为正常的发言结束并清洗
+                if (errResolver.text && errResolver.text.trim().length > 0) {
+                  console.warn(`[WS-Frontend] Expert ${message.expertId} stream error, but self-healing with partial text.`, message.error);
+                  const cleaned = extractAndCleanJson(errResolver.text, curExpertName, curExpertTitle);
+                  errResolver.resolve({
+                    content: cleaned.content,
+                    expertStance: cleaned.expertStance
+                  });
+                } else {
+                  errResolver.reject(new Error(message.error));
+                }
                 delete wsResolversRef.current[message.expertId];
               }
               break;
@@ -453,9 +638,24 @@ export default function Home() {
 
   // 智能滚动处理：保存/恢复滚动条，并在同一会议有新消息时自动沉底
   useEffect(() => {
+    const thread = chatThreadRef.current;
+    
+    // 智能防抖/节流滚动：限制 60ms 周期，并采用 rAF 二次纠偏抵消公式和文本的高度抖动，减少 Forced Reflow
+    const scrollToBottom = () => {
+      if (!thread || !isAutoScrollEnabled.current) return;
+      const now = Date.now();
+      if (now - lastScrollTimeRef.current < 60) {
+        return;
+      }
+      lastScrollTimeRef.current = now;
+      chatEndRef.current?.scrollIntoView({ behavior: "auto" });
+      requestAnimationFrame(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: "auto" });
+      });
+    };
+
     if (activeMeetingId !== prevMeetingIdRef.current) {
       // 切换了会议，尝试恢复保存的滚动位置
-      const thread = chatThreadRef.current;
       if (thread && activeMeetingId) {
         // 使用 setTimeout 确保 DOM 渲染完成
         setTimeout(() => {
@@ -479,12 +679,18 @@ export default function Home() {
     } else {
       // 同一会议下，如果有新内容生成且允许自动滚动，则滚动到底部
       if (isAutoScrollEnabled.current) {
-        // 使用 auto 而不是 smooth 可以在流式输出时避免画面抖动冲突
-        chatEndRef.current?.scrollIntoView({ behavior: "auto" });
+        scrollToBottom();
       }
     }
     prevMeetingIdRef.current = activeMeetingId || null;
-  }, [activeMeetingId, activeMeeting?.messages, activeMeetingId ? speakingExpertIds[activeMeetingId] : null, activeMeetingId ? synthesisPendingMeetings[activeMeetingId] : false]);
+  }, [
+    activeMeetingId,
+    activeMeeting?.messages,
+    activeMeetingId ? speakingExpertIds[activeMeetingId] : null,
+    activeMeetingId ? synthesisPendingMeetings[activeMeetingId] : false,
+    activeMeetingId ? inquiryPendingMeetings[activeMeetingId] : false,
+    activeMeetingId ? generatingDecisionOptions[activeMeetingId] : false
+  ]);
 
   // 稳定排序缓存，避免点击时跳动
   const sortRef = useRef<{ meetingId: string | null; positions: Record<string, number> }>({
@@ -560,9 +766,12 @@ export default function Home() {
     setMeetingModalMode("create");
     setNewMeetingDraft({
       name: businessDefaults?.defaultMeetingName || "新业务评审会议",
-      description: businessDefaults?.defaultMeetingDesc || "关于复杂议题论证的圆桌会议",
+      description: businessDefaults?.defaultMeetingDesc || "关于复杂议题论证 of 专家圆桌会议",
       globalDebateIntensity: businessDefaults?.defaultDebateIntensity || 3,
       turnOrderMode: businessDefaults?.defaultTurnOrderMode || "sequential",
+      moderatorAutonomy: "facilitative",
+      enableInquiryLoop: true,
+      decisionState: "pending",
     });
     setIsMeetingModalOpen(true);
   }
@@ -575,6 +784,9 @@ export default function Home() {
       description: activeMeeting.description,
       globalDebateIntensity: activeMeeting.globalDebateIntensity,
       turnOrderMode: activeMeeting.turnOrderMode,
+      moderatorAutonomy: activeMeeting.moderatorAutonomy || "passive",
+      enableInquiryLoop: activeMeeting.enableInquiryLoop !== false,
+      decisionState: activeMeeting.decisionState || "pending",
     });
     setIsMeetingModalOpen(true);
   }
@@ -596,6 +808,9 @@ export default function Home() {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messages: [],
+        moderatorAutonomy: newMeetingDraft.moderatorAutonomy || "facilitative",
+        enableInquiryLoop: newMeetingDraft.enableInquiryLoop !== false,
+        decisionState: newMeetingDraft.decisionState || "pending",
       };
 
       await storage.saveMeeting(TENANT_ID, newMeeting);
@@ -608,6 +823,9 @@ export default function Home() {
           description: newMeetingDraft.description || "",
           globalDebateIntensity: newMeetingDraft.globalDebateIntensity || 3,
           turnOrderMode: newMeetingDraft.turnOrderMode || "sequential",
+          moderatorAutonomy: newMeetingDraft.moderatorAutonomy || "facilitative",
+          enableInquiryLoop: newMeetingDraft.enableInquiryLoop !== false,
+          decisionState: newMeetingDraft.decisionState || "pending",
         });
       }
     }
@@ -857,7 +1075,7 @@ export default function Home() {
     contextStr: string,
     history: ChatMessage[],
     signal: AbortSignal,
-    onChunk?: (text: string) => void
+    onChunk?: (text: string, isExtracting?: boolean) => void
   ) {
     if (expert.isExternalAgent) {
       if (botStatuses[expert.id] !== "online") {
@@ -866,8 +1084,18 @@ export default function Home() {
 
       return new Promise((resolve, reject) => {
         const turnId = `turn-${Date.now()}`;
-        
+        let timeoutId: NodeJS.Timeout | null = null;
+        let hasReceivedFirstChar = false;
+
+        const cleanupTimeout = () => {
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+        };
+
         const onAbort = () => {
+          cleanupTimeout();
           delete wsResolversRef.current[expert.id];
           reject(new DOMException("Aborted", "AbortError"));
         };
@@ -877,20 +1105,53 @@ export default function Home() {
         }
         signal.addEventListener("abort", onAbort);
 
+        const resetKeepAliveTimeout = () => {
+          cleanupTimeout();
+          const streamTimeoutSeconds = llmParams?.expertStreamTimeoutSeconds ?? 45;
+          timeoutId = setTimeout(() => {
+            cleanupTimeout();
+            delete wsResolversRef.current[expert.id];
+            signal.removeEventListener("abort", onAbort);
+            reject(new Error(`外部智能体 [${expert.name}] 发言断流超时：已超过 ${streamTimeoutSeconds} 秒未收到后续文本，流程自动跳过。`));
+          }, streamTimeoutSeconds * 1000);
+        };
+
+        const wrappedOnChunk = (text: string, isExtracting?: boolean) => {
+          if (!hasReceivedFirstChar) {
+            hasReceivedFirstChar = true;
+            cleanupTimeout(); // 清除 90 秒首字超时
+          }
+          resetKeepAliveTimeout(); // 刷新 45 秒断流超时
+          if (onChunk) {
+            onChunk(text, isExtracting);
+          }
+        };
+
         wsResolversRef.current[expert.id] = {
           text: "",
-          onChunk,
+          onChunk: wrappedOnChunk,
           resolve: (val) => {
+            cleanupTimeout();
             signal.removeEventListener("abort", onAbort);
             resolve(val);
           },
           reject: (err) => {
+            cleanupTimeout();
             signal.removeEventListener("abort", onAbort);
             reject(err);
           }
         };
 
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          // 启动外部智能体首字无响应超时定时器
+          const firstCharTimeoutSeconds = llmParams?.expertFirstCharTimeoutSeconds ?? 90;
+          timeoutId = setTimeout(() => {
+            cleanupTimeout();
+            delete wsResolversRef.current[expert.id];
+            signal.removeEventListener("abort", onAbort);
+            reject(new Error(`外部智能体 [${expert.name}] 响应超时：已超过 ${firstCharTimeoutSeconds} 秒无任何吐字回应，流程自动跳过。`));
+          }, firstCharTimeoutSeconds * 1000);
+
           wsRef.current.send(JSON.stringify({
             type: "request_turn",
             meetingId: meeting.id,
@@ -903,9 +1164,12 @@ export default function Home() {
             externalAgentPrompt: systemPrompts?.externalAgentPrompt || "",
             userTitle: userProfile.title,
             userName: userProfile.name,
+            meetingName: meeting.name,
+            meetingDesc: meeting.description,
             turnId
           }));
         } else {
+          cleanupTimeout();
           signal.removeEventListener("abort", onAbort);
           delete wsResolversRef.current[expert.id];
           reject(new Error("本地中继网关已断开连接，无法请求外部智能体。"));
@@ -927,6 +1191,8 @@ export default function Home() {
         llmParams,
         systemPrompts,
         userProfile,
+        meetingName: meeting.name,
+        meetingDesc: meeting.description,
       }),
       signal,
     });
@@ -946,48 +1212,82 @@ export default function Home() {
       let isNativeReasoning = false;
       let hasClosedNativeReasoning = false;
       
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("data: ") && line !== "data: [DONE]") {
-            try {
-              const data = JSON.parse(line.slice(6));
-              const reasoningChunk = data.choices[0]?.delta?.reasoning_content;
-              const contentChunk = data.choices[0]?.delta?.content;
+      const onAbort = () => {
+        reader.cancel().catch(() => {});
+      };
+      signal.addEventListener("abort", onAbort);
 
-              if (reasoningChunk) {
-                if (!isNativeReasoning) {
-                  fullContent += "<think>\n";
-                  isNativeReasoning = true;
-                }
-                fullContent += reasoningChunk;
-              }
+      let lastActiveTime = Date.now();
+      const inactiveTimeoutSeconds = llmParams?.streamInactiveTimeoutSeconds ?? 30;
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastActiveTime > inactiveTimeoutSeconds * 1000) {
+          console.warn(`[Watchdog] Expert turn stream inactive for ${inactiveTimeoutSeconds}s, canceling reader...`);
+          clearInterval(watchdog);
+          reader.cancel().catch(() => {});
+        }
+      }, 5000);
 
-              if (contentChunk) {
-                if (isNativeReasoning && !hasClosedNativeReasoning) {
-                  fullContent += "\n</think>\n";
-                  hasClosedNativeReasoning = true;
-                }
-                fullContent += contentChunk;
-              }
+      try {
+        let shouldFinish = false;
+        while (true) {
+          if (shouldFinish) break;
+          const { done, value } = await reader.read();
+          if (done) break;
 
-              const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
-              if (onChunk) {
-                if (isInsideReasoning) {
-                  onChunk(fullContent);
-                } else {
-                  onChunk(cleanStreamingJson(fullContent));
+          lastActiveTime = Date.now();
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+          for (const line of lines) {
+            if (line === "data: [DONE]") {
+              shouldFinish = true;
+              break;
+            }
+            if (line.startsWith("data: ") && line !== "data: [DONE]") {
+              try {
+                const data = JSON.parse(line.slice(6));
+                const deltaObj = data.choices[0]?.delta;
+                const reasoningChunk = deltaObj?.reasoning_content || deltaObj?.reasoning || deltaObj?.thought;
+                const contentChunk = deltaObj?.content;
+
+                if (reasoningChunk) {
+                   if (!isNativeReasoning) {
+                     fullContent += "<think>\n";
+                     isNativeReasoning = true;
+                   }
+                   fullContent += reasoningChunk;
                 }
-              }
-            } catch (e) {}
+
+                if (contentChunk) {
+                  if (isNativeReasoning && !hasClosedNativeReasoning) {
+                    fullContent += "\n</think>\n";
+                    hasClosedNativeReasoning = true;
+                  }
+                  fullContent += contentChunk;
+                }
+
+                const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
+                if (onChunk) {
+                  if (isInsideReasoning) {
+                    onChunk(fullContent, false);
+                  } else {
+                    const cleaned = cleanStreamingJson(fullContent);
+                    const isExtracting = (fullContent.includes("<think>") && !fullContent.includes("</think>"))
+                      ? false
+                      : cleaned.length < fullContent.trim().length;
+                    onChunk(cleaned, isExtracting);
+                  }
+                }
+              } catch (e) {}
+            }
           }
         }
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        clearInterval(watchdog);
       }
       
-      return extractAndCleanJson(fullContent, expert.name);
+      return extractAndCleanJson(fullContent, expert.name, expert.title);
     } else {
       return response.json();
     }
@@ -1031,7 +1331,8 @@ export default function Home() {
     expertRounds: { expertName: string; expertTitle?: string; content: string }[],
     contextStr: string,
     history: ChatMessage[],
-    signal: AbortSignal
+    signal: AbortSignal,
+    onChunk?: (text: string) => void
   ) {
     const response = await fetch("/api/discussions/synthesis", {
       method: "POST",
@@ -1051,8 +1352,181 @@ export default function Home() {
     });
 
     if (!response.ok) {
-      const payload = await response.json();
+      const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || "主持人总结处理失败。");
+    }
+
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("text/event-stream")) {
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let fullContent = "";
+      if (!reader) throw new Error("No reader");
+
+      let isNativeReasoning = false;
+      let hasClosedNativeReasoning = false;
+
+      const onAbort = () => {
+        reader.cancel().catch(() => {});
+      };
+      signal.addEventListener("abort", onAbort);
+
+      let lastActiveTime = Date.now();
+      const inactiveTimeoutSeconds = llmParams?.streamInactiveTimeoutSeconds ?? 30;
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastActiveTime > inactiveTimeoutSeconds * 1000) {
+          console.warn(`[Watchdog] Synthesis stream inactive for ${inactiveTimeoutSeconds}s, canceling reader...`);
+          clearInterval(watchdog);
+          reader.cancel().catch(() => {});
+        }
+      }, 5000);
+
+      try {
+        let shouldFinish = false;
+        while (true) {
+          if (shouldFinish) break;
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          lastActiveTime = Date.now();
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+          for (const line of lines) {
+            if (line === "data: [DONE]") {
+              shouldFinish = true;
+              break;
+            }
+            if (line.startsWith("data: ") && line !== "data: [DONE]") {
+              try {
+                const data = JSON.parse(line.slice(6));
+                const reasoningChunk = data.choices[0]?.delta?.reasoning_content;
+                const contentChunk = data.choices[0]?.delta?.content;
+
+                if (reasoningChunk) {
+                  if (!isNativeReasoning) {
+                    fullContent += "<think>\n";
+                    isNativeReasoning = true;
+                  }
+                  fullContent += reasoningChunk;
+                }
+
+                if (contentChunk) {
+                  if (isNativeReasoning && !hasClosedNativeReasoning) {
+                    fullContent += "\n</think>\n";
+                    hasClosedNativeReasoning = true;
+                  }
+                  fullContent += contentChunk;
+                }
+
+                const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
+                if (onChunk) {
+                  if (isInsideReasoning) {
+                    onChunk(fullContent);
+                  } else {
+                    onChunk(cleanStreamingJson(fullContent));
+                  }
+                }
+              } catch (e) {}
+            }
+          }
+        }
+      } catch (err: any) {
+        if (err.name === "AbortError" || signal.aborted || err.message?.toLowerCase().includes("abort")) {
+          console.log("Synthesis stream reading aborted safely.");
+        } else {
+          throw err;
+        }
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        clearInterval(watchdog);
+      }
+
+      try {
+        const firstBrace = fullContent.indexOf("{");
+        const lastBrace = fullContent.lastIndexOf("}");
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          const jsonString = fullContent.substring(firstBrace, lastBrace + 1);
+          const parsed = cleanAndParseJson<any>(jsonString);
+          if (parsed && typeof parsed === "object" && "summary" in parsed) {
+            return parsed;
+          }
+        }
+      } catch (e) {
+        console.error("Failed to parse streaming synthesis JSON", fullContent, e);
+      }
+
+      return {
+        summary: fullContent,
+        consensus: ["已记录在总结中"],
+        disagreements: ["参见上述文本"],
+        decisions: ["见总结详情"],
+        nextActions: ["立即推进相关决策评估"],
+      };
+    } else {
+      return response.json();
+    }
+  }
+
+  // 调用 AI 判定是否需要追问补充信息
+  async function requestInquiryCheck(
+    meetingId: string,
+    userQuestion: string,
+    contextStr: string,
+    history: ChatMessage[],
+    signal: AbortSignal
+  ): Promise<{ result: string }> {
+    const response = await fetch("/api/discussions/inquiry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question: userQuestion,
+        projectContext: contextStr,
+        conversationHistory: history,
+        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
+        llmParams,
+        systemPrompts,
+      }),
+      signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Inquiry check HTTP error! status: ${response.status}`);
+    }
+
+    return response.json();
+  }
+
+  // 调用 AI 生成决策备选可选项
+  async function requestDecisionOptions(
+    meetingId: string,
+    userQuestion: string,
+    contextStr: string,
+    history: ChatMessage[],
+    synthesisSummary: string,
+    signal: AbortSignal
+  ): Promise<{ options: string[] }> {
+    // 防御性校验：若 llmParams / systemPrompts 还未加载，使用后端默认值
+    const safeLlmParams = llmParams ?? undefined;
+    const safeSystemPrompts = systemPrompts ?? undefined;
+
+    const response = await fetch("/api/discussions/decision-options", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question: userQuestion,
+        projectContext: contextStr,
+        conversationHistory: history,
+        synthesisSummary,
+        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
+        llmParams: safeLlmParams,
+        systemPrompts: safeSystemPrompts,
+      }),
+      signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Decision options HTTP error! status: ${response.status}`);
     }
 
     return response.json();
@@ -1072,6 +1546,15 @@ export default function Home() {
           delete wsResolversRef.current[expertId];
         }
       });
+
+      if (facilitativeResolverRef.current) {
+        facilitativeResolverRef.current.reject(new DOMException("Aborted", "AbortError"));
+        facilitativeResolverRef.current = null;
+      }
+      if (inquiryResolverRef.current) {
+        inquiryResolverRef.current.reject(new DOMException("Aborted", "AbortError"));
+        inquiryResolverRef.current = null;
+      }
     }
   }
 
@@ -1085,9 +1568,10 @@ export default function Home() {
   }
 
   // 圆桌讨论主提交入口
+  // 圆桌讨论主提交入口
   async function handleSubmitDiscussion(
     event?: FormEvent<HTMLFormElement>,
-    editParams?: { targetMeetingId: string; userQuestion: string; baseHistory: ChatMessage[]; baseSources: any[] }
+    editParams?: { targetMeetingId: string; userQuestion: string; baseHistory: ChatMessage[]; baseSources: any[]; messageId?: string }
   ) {
     if (event) event.preventDefault();
     
@@ -1105,7 +1589,14 @@ export default function Home() {
     }
 
     // 缓存这轮提问发生前的整场历史对话列表
-    const conversationHistory = editParams ? editParams.baseHistory : targetMeeting.messages;
+    let conversationHistory = editParams ? editParams.baseHistory : targetMeeting.messages;
+    if (editParams && editParams.messageId) {
+      const msgIndex = targetMeeting.messages.findIndex(m => m.id === editParams.messageId);
+      if (msgIndex >= 0) {
+        // 保留被编辑的消息之前的所有历史消息，丢弃它本身及之后的所有过气气泡
+        conversationHistory = targetMeeting.messages.slice(0, msgIndex);
+      }
+    }
 
     // 1. 创建 User 消息
     const userMessage: ChatMessage = {
@@ -1139,40 +1630,92 @@ export default function Home() {
     const signal = controller.signal;
 
     // 获取参会的专家
-    const selectedExperts = allExperts.filter(e => targetMeeting.expertIds.includes(e.id));
+    const getSelectedExperts = () => {
+      const latestM = meetingsRef.current.find(m => m.id === targetMeetingId) || currentMeeting;
+      return allExpertsRef.current.filter(e => latestM.expertIds.includes(e.id));
+    };
     const meetingContextStr = `会议名称：${targetMeeting.name}\n会议背景与描述：${targetMeeting.description}`;
     const contextStr = [meetingContextStr, projectContext, buildSourceContext()].filter(Boolean).join("\n\n");
 
     // 本轮发言缓冲
     const previousTurns: { expertName: string; expertTitle?: string; content: string }[] = [];
     let currentMeeting = nextMeetingState;
+    let shouldAutoConclude = false;
+
+    // 统一步骤消息与最新配置项同步存盘，彻底防御回写过期配置导致的状态倒退
+    const saveCurrentMeetingState = async (nextMeeting: Meeting) => {
+      const latestM = meetingsRef.current.find(m => m.id === targetMeetingId) || nextMeeting;
+      const updatedMeeting = {
+        ...nextMeeting,
+        expertIds: latestM.expertIds,
+        moderatorId: latestM.moderatorId,
+        turnOrderMode: latestM.turnOrderMode,
+        globalDebateIntensity: latestM.globalDebateIntensity,
+        moderatorAutonomy: latestM.moderatorAutonomy,
+        enableInquiryLoop: latestM.enableInquiryLoop,
+      };
+      currentMeeting = updatedMeeting;
+      setMeetings(prev => prev.map(m => m.id === targetMeetingId ? updatedMeeting : m));
+      await storage.saveMeeting(TENANT_ID, updatedMeeting);
+      return updatedMeeting;
+    };
 
     try {
       // 如果没有勾选任何参会专家，直接跑主持人总结
-      if (selectedExperts.length === 0) {
+      if (getSelectedExperts().length === 0) {
         setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
-        const synth = await requestSynthesis(currentMeeting, userQuestion, [], contextStr, conversationHistory, signal);
         
-        const modMessage: ChatMessage = {
-          id: `msg-${Date.now()}-mod`,
+        const modMessageId = `msg-${Date.now()}-mod`;
+        const currentModMode = moderatorModes.find(m => m.id === currentMeeting.moderatorId) || moderatorModes[0];
+        let modMessage: ChatMessage = {
+          id: modMessageId,
           meetingId: targetMeetingId,
           tenantId: TENANT_ID,
           role: "moderator",
-          senderName: systemPrompts?.moderatorName || "主持人",
-          content: synth.summary,
-          expertStance: {
-            stance: "共识：" + (synth.consensus?.join("；") || "无。"),
-            concern: "分歧：" + (synth.disagreements?.join("；") || "无。"),
-            recommendation: "决议：" + (synth.decisions?.join("；") || "无。"),
-            tradeoff: "行动：" + (synth.nextActions?.join("；") || "无。"),
-          },
+          senderName: systemPrompts?.moderatorName || currentModMode.name || "主持人",
+          senderTitle: systemPrompts?.moderatorTitle || "决策协调官",
+          content: "",
           createdAt: Date.now(),
         };
-
-        const finalMessages = [...currentMeeting.messages, modMessage];
-        currentMeeting = { ...currentMeeting, messages: finalMessages };
+        
+        let nextMsgs = [...currentMeeting.messages, modMessage];
+        currentMeeting = { ...currentMeeting, messages: nextMsgs };
         setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
-        await storage.saveMeeting(TENANT_ID, currentMeeting);
+
+        const synth = await requestSynthesis(
+          currentMeeting, 
+          userQuestion, 
+          [], 
+          contextStr, 
+          conversationHistory, 
+          signal,
+          (text) => {
+            modMessage = { ...modMessage, content: text };
+            setMeetings((prev) =>
+              prev.map((m) => {
+                if (m.id !== targetMeetingId) return m;
+                const updatedMessages = m.messages.map((msg) =>
+                  msg.id === modMessageId ? modMessage : msg
+                );
+                return { ...m, messages: updatedMessages };
+              })
+            );
+          }
+        );
+        
+        modMessage = {
+          ...modMessage,
+          content: synth.summary,
+          moderatorSummary: {
+            consensus: synth.consensus || [],
+            disagreements: synth.disagreements || [],
+            decisions: synth.decisions || [],
+            nextActions: synth.nextActions || [],
+          },
+        };
+
+        const finalMessages = currentMeeting.messages.map(msg => msg.id === modMessageId ? modMessage : msg);
+        await saveCurrentMeetingState({ ...currentMeeting, messages: finalMessages });
         
         setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
         setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
@@ -1185,121 +1728,442 @@ export default function Home() {
         return;
       }
 
-      // 自动圆桌发言流 (Sequential 或 Relevance)
-      // 自动排除处于离线状态的外部智能体，防止调用链崩溃中断会议
-      let remainCandidates = selectedExperts.filter(e => {
+      // 初始化大循环状态
+      let currentRound = 1;
+      const maxAutonomousRounds = 3;
+      let activeQuestion = userQuestion;
+      let activeContext = contextStr;
+      const discussionDecisions: string[] = [];
+
+      // 自动排除处于离线状态的外部智能体
+      let initialCandidates = getSelectedExperts().filter(e => {
         if (e.isExternalAgent) {
           return botStatuses[e.id] === "online";
         }
         return true;
       });
 
-      while (remainCandidates.length > 0) {
+      let nextRoundCandidates: Expert[] | null = null;
+
+      // ================= 反馈大循环状态机 =================
+      meetingLoop: while (true) {
         if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-        // 确定下一个发言人
-        let currentExpert: Expert;
-        if (currentMeeting.turnOrderMode === "relevance" && remainCandidates.length > 1) {
-          setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: true }));
-          const nextId = await requestNextSpeakerId(userQuestion, previousTurns, remainCandidates, conversationHistory, signal);
-          setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: false }));
-          currentExpert = remainCandidates.find(e => e.id === nextId) || remainCandidates[0];
-        } else {
-          currentExpert = remainCandidates[0];
+        // 每次迭代前同步获取最新的侧边栏各项控制胶囊及专家席位设置，防止在大循环运行时修改无效
+        const latestLoopM = meetingsRef.current.find(m => m.id === targetMeetingId) || currentMeeting;
+        currentMeeting.expertIds = latestLoopM.expertIds;
+        currentMeeting.moderatorId = latestLoopM.moderatorId;
+        currentMeeting.turnOrderMode = latestLoopM.turnOrderMode;
+        currentMeeting.moderatorAutonomy = latestLoopM.moderatorAutonomy;
+        currentMeeting.enableInquiryLoop = latestLoopM.enableInquiryLoop;
+        currentMeeting.globalDebateIntensity = latestLoopM.globalDebateIntensity;
+
+        // ================= 前置：信息澄清与追问判断流程 (Step 1 to Step 5) =================
+        if (currentMeeting.enableInquiryLoop) {
+          let currentInquiryInput = activeQuestion;
+          let accumulatedQuestion = activeQuestion;
+          inquiryLoop: while (true) {
+            if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+
+            // 1. 检查是否需要追问 (调用后端 API)
+            setInquiryPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
+            
+            let inquiryResText = "";
+            try {
+              const res = await requestInquiryCheck(
+                targetMeetingId,
+                currentInquiryInput,
+                activeContext,
+                currentMeeting.messages,
+                signal
+              );
+              inquiryResText = res.result || "";
+            } catch (err: any) {
+              console.error("信息追问判定失败:", err);
+              if (err.name === "AbortError" || signal.aborted) throw err;
+              // 失败则直接跳过，推进会议
+              break inquiryLoop;
+            } finally {
+              setInquiryPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+            }
+
+            const inquiryPrompt = extractInquiryPrompt(inquiryResText);
+            if (inquiryPrompt && inquiryPrompt !== "NO_INQUIRY") {
+              // 展示信息补充面板，并将流程挂起
+              setInquiryPromptText(inquiryPrompt);
+                setInquiryConsoleMeetingId(targetMeetingId);
+
+                // 挂起 Promise 等待用户在环操作
+                const userAction = await new Promise<{ type: "skip" | "submit"; content?: string }>((resolve, reject) => {
+                  inquiryResolverRef.current = { resolve, reject };
+                });
+
+                setInquiryConsoleMeetingId(null);
+
+                if (userAction.type === "skip") {
+                  // 用户选择跳过，讨论正常推进
+                  break inquiryLoop;
+                } else if (userAction.type === "submit" && userAction.content) {
+                  // 用户补充了信息，直接追加到原用户消息气泡尾部
+                  const contentText = userAction.content.trim();
+                  accumulatedQuestion = `${accumulatedQuestion}\n\n**[补充澄清]**\n**问**：${inquiryPrompt}\n**答**：${contentText}`;
+
+                  // 1. 同步更新前端页面中该用户消息气泡的 React 状态
+                  setMeetings((prev) =>
+                    prev.map((m) => {
+                      if (m.id !== targetMeetingId) return m;
+                      const nextMessages = m.messages.map((msg) => {
+                        if (msg.id === userMessage.id) {
+                          return { ...msg, content: accumulatedQuestion };
+                        }
+                        return msg;
+                      });
+                      return { ...m, messages: nextMessages };
+                    })
+                  );
+
+                  // 2. 更新内存数据并存盘
+                  const nextMessages = currentMeeting.messages.map((msg) => {
+                    if (msg.id === userMessage.id) {
+                      return { ...msg, content: accumulatedQuestion };
+                    }
+                    return msg;
+                  });
+                  currentMeeting = { ...currentMeeting, messages: nextMessages };
+                  await saveCurrentMeetingState(currentMeeting);
+
+                  // 重新回到 step 1 进行判定 (澄清内容已保存在 accumulatedQuestion 中，避免在上下文中重复拼接)
+                  currentInquiryInput = accumulatedQuestion;
+                  continue inquiryLoop;
+                }
+              }
+            break inquiryLoop;
+          }
+          activeQuestion = accumulatedQuestion;
         }
 
-        remainCandidates = remainCandidates.filter(e => e.id !== currentExpert.id);
+        let remainCandidates = nextRoundCandidates !== null ? nextRoundCandidates : [...initialCandidates];
+        nextRoundCandidates = null; // 重置本轮定制候选
 
-        setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: currentExpert.id }));
+        if (remainCandidates.length === 0) {
+          break meetingLoop;
+        }
 
-        // 先创建一条空的专家发言
-        const expertMessageId = `msg-${Date.now()}-${currentExpert.id}`;
-        let expertMessage: ChatMessage = {
-          id: expertMessageId,
-          meetingId: targetMeetingId,
+        while (remainCandidates.length > 0) {
+          if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+
+          // 1. 确定下一个发言人
+          let currentExpert: Expert;
+          if (currentMeeting.turnOrderMode === "relevance" && remainCandidates.length > 1) {
+            setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: true }));
+            const nextId = await requestNextSpeakerId(activeQuestion, previousTurns, remainCandidates, conversationHistory, signal);
+            setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: false }));
+            currentExpert = remainCandidates.find(e => e.id === nextId) || remainCandidates[0];
+          } else {
+            currentExpert = remainCandidates[0];
+          }
+
+          remainCandidates = remainCandidates.filter(e => e.id !== currentExpert.id);
+          setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: currentExpert.id }));
+
+          // 2. 先创建一条空的专家发言
+          const expertMessageId = `msg-${Date.now()}-${currentExpert.id}`;
+          let expertMessage: ChatMessage = {
+            id: expertMessageId,
+            meetingId: targetMeetingId,
+            tenantId: TENANT_ID,
+            role: "expert",
+            senderId: currentExpert.id,
+            senderName: currentExpert.name,
+            senderTitle: currentExpert.title,
+            content: currentExpert.isExternalAgent ? "__WAKING__" : "",
+            createdAt: Date.now(),
+          };
+
+          let nextMsgs = [...currentMeeting.messages, expertMessage];
+          currentMeeting = { ...currentMeeting, messages: nextMsgs };
+          setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
+
+          let finalTurnContent = "";
+          let finalExpertStance = undefined;
+
+          try {
+            let guidedQuestion = activeQuestion;
+            if (discussionDecisions.length > 0) {
+              guidedQuestion = `【此前评审已达成的决议与共识】：\n${discussionDecisions.map((d, i) => `${i + 1}. ${d}`).join("\n")}\n\n【本轮针对性研讨议题】：${activeQuestion}`;
+            }
+
+            const turnResult = await requestExpertTurn(
+              currentMeeting,
+              currentExpert,
+              previousTurns,
+              guidedQuestion,
+              activeContext,
+              conversationHistory,
+              signal,
+              (text, isExtracting) => {
+                expertMessage = { 
+                  ...expertMessage, 
+                  content: text,
+                  isStanceExtracting: isExtracting || false
+                };
+                setMeetings((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== targetMeetingId) return m;
+                    const updatedMessages = m.messages.map((msg) =>
+                      msg.id === expertMessageId ? expertMessage : msg
+                    );
+                    return { ...m, messages: updatedMessages };
+                  })
+                );
+              }
+            );
+            
+            finalTurnContent = turnResult.content;
+            finalExpertStance = turnResult.expertStance;
+          } catch (error: any) {
+            console.error(`专家 [${currentExpert.name}] 发言异常:`, error);
+            if (error.name === "AbortError" || signal.aborted) throw error;
+            const errMsg = (error.message || "").toLowerCase();
+            const isTimeout = errMsg.includes("超时") || errMsg.includes("timeout") || errMsg.includes("limit");
+            finalTurnContent = isTimeout ? "__TIMEOUT__" : "__ERROR__";
+            finalExpertStance = undefined;
+          }
+
+          expertMessage = {
+            ...expertMessage,
+            content: finalTurnContent,
+            expertStance: finalExpertStance,
+          };
+
+          nextMsgs = currentMeeting.messages.map(msg => 
+            msg.id === expertMessageId ? expertMessage : msg
+          );
+          currentMeeting = { ...currentMeeting, messages: nextMsgs };
+          setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
+          await saveCurrentMeetingState(currentMeeting);
+
+          const previousTurnContent = (finalTurnContent === "__TIMEOUT__" || finalTurnContent === "__ERROR__")
+            ? `[该专家发言由于${finalTurnContent === "__TIMEOUT__" ? "响应超时" : "网关连接异常"}被系统跳过]`
+            : finalTurnContent;
+
+          previousTurns.push({
+            expertName: currentExpert.name,
+            expertTitle: currentExpert.title,
+            content: previousTurnContent,
+          });
+        }
+
+        // 3. 调用主持人综合总结
+        setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: null }));
+        setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
+
+        const modMessageId = `msg-${Date.now()}-mod`;
+        const currentModMode = moderatorModes.find(m => m.id === currentMeeting.moderatorId) || moderatorModes[0];
+        let modMessage: ChatMessage = {
+          id: modMessageId,
+          meetingId: currentMeeting.id,
           tenantId: TENANT_ID,
-          role: "expert",
-          senderId: currentExpert.id,
-          senderName: currentExpert.name,
-          senderTitle: currentExpert.title,
+          role: "moderator",
+          senderName: systemPrompts?.moderatorName || currentModMode.name || "主持人",
+          senderTitle: systemPrompts?.moderatorTitle || "决策协调官",
           content: "",
           createdAt: Date.now(),
         };
 
-        let nextMsgs = [...currentMeeting.messages, expertMessage];
+        let nextMsgs = [...currentMeeting.messages, modMessage];
         currentMeeting = { ...currentMeeting, messages: nextMsgs };
         setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
 
-        // 调用单步发言
-        const turnResult = await requestExpertTurn(
+        const synth = await requestSynthesis(
           currentMeeting,
-          currentExpert,
+          activeQuestion,
           previousTurns,
-          userQuestion,
-          contextStr,
+          activeContext,
           conversationHistory,
           signal,
           (text) => {
-            // Update message content incrementally
-            expertMessage.content = text;
-            const updatedMsgs = currentMeeting.messages.map(msg => 
-              msg.id === expertMessageId ? { ...expertMessage } : msg
+            modMessage = { ...modMessage, content: text };
+            setMeetings((prev) =>
+              prev.map((m) => {
+                if (m.id !== targetMeetingId) return m;
+                const updatedMessages = m.messages.map((msg) =>
+                  msg.id === modMessageId ? modMessage : msg
+                );
+                return { ...m, messages: updatedMessages };
+              })
             );
-            setMeetings(prev => prev.map(m => m.id === targetMeetingId ? { ...m, messages: updatedMsgs } : m));
           }
         );
 
-        // 终结：填入带有 Stance 的最终内容并保存
-        expertMessage = {
-          ...expertMessage,
-          content: turnResult.content,
-          expertStance: turnResult.expertStance,
+        modMessage = {
+          ...modMessage,
+          content: synth.summary,
+          moderatorSummary: {
+            consensus: synth.consensus || [],
+            disagreements: synth.disagreements || [],
+            decisions: synth.decisions || [],
+            nextActions: synth.nextActions || [],
+          },
         };
 
-        nextMsgs = currentMeeting.messages.map(msg => 
-          msg.id === expertMessageId ? expertMessage : msg
-        );
-        currentMeeting = { ...currentMeeting, messages: nextMsgs };
-        setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
-        await storage.saveMeeting(TENANT_ID, currentMeeting);
+        if (synth.decisions && Array.isArray(synth.decisions)) {
+          synth.decisions.forEach((d: string) => {
+            if (d && !discussionDecisions.includes(d)) {
+              discussionDecisions.push(d);
+            }
+          });
+        }
 
-        previousTurns.push({
-          expertName: currentExpert.name,
-          expertTitle: currentExpert.title,
-          content: turnResult.content,
-        });
+        nextMsgs = currentMeeting.messages.map(msg => msg.id === modMessageId ? modMessage : msg);
+        await saveCurrentMeetingState({ ...currentMeeting, messages: nextMsgs });
+
+        setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+
+        // ================= 后置：决策提取与状态机抉择分流 =================
+        // 同步最新的配置属性
+        const latestPostM = meetingsRef.current.find(m => m.id === targetMeetingId) || currentMeeting;
+        currentMeeting.moderatorAutonomy = latestPostM.moderatorAutonomy;
+        currentMeeting.enableInquiryLoop = latestPostM.enableInquiryLoop;
+
+        const autonomy = currentMeeting.moderatorAutonomy || "passive";
+
+        // 连锁限制：当为自主决策模式时，强制关闭信息追问环
+        if (autonomy === "autonomous") {
+          currentMeeting.enableInquiryLoop = false;
+        }
+
+        // 前置轮次上限研判
+        const maxAutoRounds = llmParams?.maxAutonomousRounds ?? 3;
+        if (autonomy === "autonomous" && currentRound >= maxAutoRounds) {
+          const endMsg: ChatMessage = {
+            id: `msg-auto-end-${Date.now()}`,
+            meetingId: targetMeetingId,
+            tenantId: TENANT_ID,
+            role: "moderator",
+            senderName: "系统提示",
+            content: `💡 会议已达到自主决策的最大迭代轮次上限 (${maxAutoRounds}轮)，讨论已自动收敛结束。`,
+            createdAt: Date.now(),
+          };
+          await saveCurrentMeetingState({ ...currentMeeting, messages: [...currentMeeting.messages, endMsg] });
+
+          shouldAutoConclude = false; // 自主模式超限不自动提炼结论！
+          break meetingLoop;
+        }
+
+        if (autonomy === "passive") {
+          // 被动传统模式，直接退出，会议结案并由用户手动决定提炼结论
+          break meetingLoop;
+        }
+
+        // 1. 调用后端接口为本次讨论生成方向性备选决策选项
+        setGeneratingDecisionOptions(prev => ({ ...prev, [targetMeetingId]: true }));
+        let generatedOptions: string[] = [];
+        try {
+          const optRes = await requestDecisionOptions(
+            targetMeetingId,
+            activeQuestion,
+            activeContext,
+            currentMeeting.messages,
+            modMessage.content || "",
+            signal
+          );
+          generatedOptions = optRes.options || [];
+        } catch (e: any) {
+          console.error("生成决策意见选项失败:", e);
+          generatedOptions = [
+            "方向一：维持现状，进一步观测和评估指标细节",
+            "方向二：折中改进，在局部实施优化以规避最严重风险",
+            "方向三：全面重构，按专家的最高标准建议执行"
+          ];
+        } finally {
+          setGeneratingDecisionOptions(prev => ({ ...prev, [targetMeetingId]: false }));
+        }
+
+        // 保存到状态中供 UI 渲染
+        setMeetingDecisionOptions(prev => ({ ...prev, [targetMeetingId]: generatedOptions }));
+        // 默认预选第一项（推荐选项），方便用户快速决策 & 自主模式展示主持人的选择
+        if (generatedOptions.length > 0) {
+          setSelectedDecisionOption(generatedOptions[0]);
+        }
+
+        // 2. 分模式挂起或自动推进
+        // 2. 分模式挂起并等待抉择（促进与自主均展示面板以提供倒计时 and 鼠标移入干预）
+        if (autonomy === "facilitative" || autonomy === "autonomous") {
+          setSteeringConsoleMeetingId(targetMeetingId);
+          setSteeringPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
+          // scrollIntoView 由 useEffect 中的监听器负责（更可靠）
+
+          try {
+            const action = await new Promise<{
+              type: "choose" | "finish";
+              opinion?: string;
+              isAuto?: boolean;
+            }>((resolve, reject) => {
+              facilitativeResolverRef.current = { resolve, reject };
+            });
+
+            setSteeringConsoleMeetingId(null);
+            setSteeringPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+
+            if (action.type === "finish") {
+              shouldAutoConclude = true; // 仅在人类明确结案陈词时才自动提炼结论并归档！
+              break meetingLoop;
+            }
+
+            if (action.type === "choose" && action.opinion) {
+              const selectedOpinion = action.opinion.trim();
+
+              const isAuto = !!action.isAuto;
+              const currentModMode = moderatorModes.find(m => m.id === currentMeeting.moderatorId) || moderatorModes[0];
+              const decisionChoiceMsg: ChatMessage = {
+                id: `msg-${Date.now()}-decision-choice`,
+                meetingId: targetMeetingId,
+                tenantId: TENANT_ID,
+                role: "user",
+                senderName: isAuto ? (systemPrompts?.moderatorName || currentModMode.name || "主持人") : userProfile.name,
+                senderTitle: isAuto ? (systemPrompts?.moderatorTitle || "决策协调官") : `${userProfile.title}(决议选择)`,
+                content: isAuto
+                  ? `💡 【主持人自主选定了下一步论证方向】：\n> **${selectedOpinion}**`
+                  : `【已决定下一步的论证方向】：\n${selectedOpinion}`,
+                createdAt: Date.now(),
+              };
+
+              await saveCurrentMeetingState({ ...currentMeeting, messages: [...currentMeeting.messages, decisionChoiceMsg] });
+
+              // 开启新一轮论证
+              activeQuestion = selectedOpinion;
+              currentRound++;
+              previousTurns.length = 0;
+              nextRoundCandidates = getSelectedExperts().filter(e => {
+                if (e.isExternalAgent) return botStatuses[e.id] === "online";
+                return true;
+              });
+
+              continue meetingLoop;
+            }
+          } catch (err) {
+            setSteeringConsoleMeetingId(null);
+            setSteeringPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+            throw err;
+          }
+        }
       }
 
-      // 4. 调用主持人综合总结
-      setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: null }));
-      setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
-
-      const synth = await requestSynthesis(currentMeeting, userQuestion, previousTurns, contextStr, conversationHistory, signal);
-      
-      const modMessage: ChatMessage = {
-        id: `msg-${Date.now()}-mod`,
-        meetingId: currentMeeting.id,
-        tenantId: TENANT_ID,
-        role: "moderator",
-        senderName: systemPrompts?.moderatorName || "主持人",
-        content: synth.summary,
-        expertStance: {
-          stance: "共识：" + (synth.consensus?.join("；") || "达成基本共识。"),
-          concern: "分歧：" + (synth.disagreements?.join("；") || "无明显分歧。"),
-          recommendation: "决议：" + (synth.decisions?.join("；") || "默认按最优方案落地。"),
-          tradeoff: "行动：" + (synth.nextActions?.join("；") || "跟进常规迭代。"),
-        },
-        createdAt: Date.now(),
-      };
-
-      const finalMessages = [...currentMeeting.messages, modMessage];
-      currentMeeting = { ...currentMeeting, messages: finalMessages };
-      setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
-      await storage.saveMeeting(TENANT_ID, currentMeeting);
+      // 讨论正常收敛结束，自动触发结论生成提炼 (如果 shouldAutoConclude 为 true)
+      if (shouldAutoConclude) {
+        setTimeout(() => {
+          void handleGenerateConclusion(currentMeeting);
+        }, 100);
+      }
 
     } catch (e: any) {
-      if (e.name === "AbortError" || signal.aborted) {
+      const isAbort = e.name === "AbortError" || signal.aborted || e.message?.toLowerCase().includes("abort");
+      if (isAbort) {
         // 叫停处理
+        setInquiryConsoleMeetingId(null);
+        setInquiryPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+        
         const abortMessage: ChatMessage = {
           id: `msg-abort-${Date.now()}`,
           meetingId: targetMeetingId,
@@ -1315,7 +2179,25 @@ export default function Home() {
         await storage.saveMeeting(TENANT_ID, nextState);
       } else {
         console.error("圆桌讨论异常中止", e);
-        alert(`圆桌发生异常: ${e.message || "请求失败"}`);
+        const errMsg = e.message || "请求失败";
+        const isTimeout = errMsg.toLowerCase().includes("超时") || errMsg.includes("timeout") || errMsg.includes("limit");
+        
+        if (isTimeout) {
+          const timeoutMsg: ChatMessage = {
+            id: `msg-timeout-err-${Date.now()}`,
+            meetingId: targetMeetingId,
+            tenantId: TENANT_ID,
+            role: "moderator",
+            senderName: "系统提示",
+            content: `⚠️ 圆桌讨论部分流程发生响应超时 (${errMsg})，已自动跳过并恢复流程，您可以继续发起讨论或调整设置。`,
+            createdAt: Date.now(),
+          };
+          const nextState = { ...currentMeeting, messages: [...currentMeeting.messages, timeoutMsg] };
+          setMeetings(prev => prev.map(m => m.id === targetMeetingId ? nextState : m));
+          await storage.saveMeeting(TENANT_ID, nextState);
+        } else {
+          alert(`圆桌发生异常: ${errMsg}`);
+        }
       }
     } finally {
       setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
@@ -1366,7 +2248,7 @@ export default function Home() {
         senderId: expert.id,
         senderName: expert.name,
         senderTitle: expert.title,
-        content: "",
+        content: expert.isExternalAgent ? "__WAKING__" : "",
         createdAt: Date.now(),
       };
 
@@ -1382,12 +2264,21 @@ export default function Home() {
         contextStr,
         conversationHistory,
         signal,
-        (text) => {
-          expertMessage.content = text;
-          const updatedMsgs = currentMeetingState.messages.map(msg => 
-            msg.id === expertMessageId ? { ...expertMessage } : msg
+        (text, isExtracting) => {
+          expertMessage = { 
+            ...expertMessage, 
+            content: text,
+            isStanceExtracting: isExtracting || false
+          };
+          setMeetings((prev) =>
+            prev.map((m) => {
+              if (m.id !== targetMeetingId) return m;
+              const updatedMessages = m.messages.map((msg) =>
+                msg.id === expertMessageId ? expertMessage : msg
+              );
+              return { ...m, messages: updatedMessages };
+            })
           );
-          setMeetings(prev => prev.map(m => m.id === targetMeetingId ? { ...m, messages: updatedMsgs } : m));
         }
       );
 
@@ -1452,13 +2343,14 @@ export default function Home() {
         meetingId: targetMeetingId,
         tenantId: TENANT_ID,
         role: "moderator",
-        senderName: "主持人",
+        senderName: systemPrompts?.moderatorName || "主持人",
+        senderTitle: systemPrompts?.moderatorTitle || "决策协调官",
         content: synth.summary,
-        expertStance: {
-          stance: "共识：" + (synth.consensus?.join("；") || "达成基本共识。"),
-          concern: "分歧：" + (synth.disagreements?.join("；") || "无明显分歧。"),
-          recommendation: "决议：" + (synth.decisions?.join("；") || "无特定决议。"),
-          tradeoff: "行动：" + (synth.nextActions?.join("；") || "维持原状。"),
+        moderatorSummary: {
+          consensus: synth.consensus || [],
+          disagreements: synth.disagreements || [],
+          decisions: synth.decisions || [],
+          nextActions: synth.nextActions || [],
         },
         createdAt: Date.now(),
       };
@@ -1479,11 +2371,16 @@ export default function Home() {
     }
   }
 
+
   // --- 结论相关处理 ---
-  async function handleGenerateConclusion() {
-    if (!activeMeeting || activeMeeting.messages.length === 0 || generatingConclusions[activeMeetingId]) return;
+  async function handleGenerateConclusion(customMeeting?: Meeting) {
+    // 强防 React onClick 鼠标事件误传入，提供自动回退
+    const hasMessages = customMeeting && Array.isArray(customMeeting.messages);
+    const targetMeeting = hasMessages ? customMeeting : activeMeeting;
     
-    const targetMeetingId = activeMeeting.id;
+    if (!targetMeeting || !Array.isArray(targetMeeting.messages) || targetMeeting.messages.length === 0 || generatingConclusions[targetMeeting.id]) return;
+    
+    const targetMeetingId = targetMeeting.id;
     setGeneratingConclusions(prev => ({ ...prev, [targetMeetingId]: true }));
     
     // 立即跳转/平滑滚动到页面最底部的“正在生成的控制按钮”处
@@ -1506,8 +2403,8 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          projectContext: `会议名称：${activeMeeting.name}\n会议背景与描述：${activeMeeting.description}`,
-          conversationHistory: activeMeeting.messages,
+          projectContext: `会议名称：${targetMeeting.name}\n会议背景与描述：${targetMeeting.description}`,
+          conversationHistory: targetMeeting.messages,
           engineConfig: activeConfig,
           llmParams,
           systemPrompts,
@@ -1517,7 +2414,7 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       
-      const nextMeeting = { ...activeMeeting, finalConclusion: data.conclusion };
+      const nextMeeting = { ...targetMeeting, finalConclusion: data.conclusion };
       setMeetings(prev => prev.map(m => m.id === targetMeetingId ? nextMeeting : m));
       await storage.saveMeeting(TENANT_ID, nextMeeting);
       
@@ -1784,9 +2681,9 @@ export default function Home() {
                 className="btn-create-meeting"
                 type="button"
                 onClick={openCustomModal}
-                title={activeMeetingId ? "新建会议专属智能体" : "请先选择或创建会议"}
-                disabled={!activeMeetingId}
-                style={{ opacity: !activeMeetingId ? 0.5 : 1, cursor: !activeMeetingId ? "not-allowed" : "pointer" }}
+                title={!activeMeetingId ? "请先选择或创建会议" : (isControlsDisabled ? "发言进行中，无法新建智能体" : "新建会议专属智能体")}
+                disabled={!activeMeetingId || isControlsDisabled}
+                style={{ opacity: (!activeMeetingId || isControlsDisabled) ? 0.5 : 1, cursor: (!activeMeetingId || isControlsDisabled) ? "not-allowed" : "pointer" }}
               >
                 +
               </button>
@@ -1801,13 +2698,15 @@ export default function Home() {
                   return (
                     <div
                       key={expert.id}
-                      className={`role-card ${isSelected ? "is-selected" : ""} ${isSpeaking ? "is-speaking" : ""} ${expert.isExternalAgent ? "is-external-agent" : ""}`}
+                      className={`role-card ${isSelected ? "is-selected" : ""} ${isSpeaking ? "is-speaking" : ""} ${expert.isExternalAgent ? "is-external-agent" : ""} ${isControlsDisabled ? "is-disabled" : ""}`}
+                      style={{ opacity: isControlsDisabled ? 0.6 : 1, transition: "opacity 0.2s" }}
                     >
                       <div className="role-toggle">
                         <div 
                           className="role-topline" 
-                          style={{ cursor: "pointer" }}
+                          style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer" }}
                           onClick={() => {
+                            if (isControlsDisabled) return;
                             if (!activeMeeting) return;
                             const ids = isSelected
                               ? activeMeeting.expertIds.filter(id => id !== expert.id)
@@ -1883,7 +2782,8 @@ export default function Home() {
                               min="1"
                               max="5"
                               value={expert.debateIntensity}
-                              disabled={activeMeetingId ? discussingMeetings[activeMeetingId] : false}
+                              disabled={isControlsDisabled}
+                              style={{ cursor: isControlsDisabled ? "not-allowed" : "auto" }}
                               onChange={async (e) => {
                                 const val = Number(e.target.value);
                                 if (expert.isCustom) {
@@ -1923,15 +2823,26 @@ export default function Home() {
                           <button
                             className="text-button"
                             type="button"
-                            onClick={() => openEditCustomModal(expert)}
-                            style={{ color: "var(--amber)" }}
+                            onClick={() => !isControlsDisabled && openEditCustomModal(expert)}
+                            disabled={isControlsDisabled}
+                            style={{ 
+                              color: isControlsDisabled ? "var(--muted)" : "var(--amber)", 
+                              cursor: isControlsDisabled ? "not-allowed" : "pointer",
+                              opacity: isControlsDisabled ? 0.5 : 1
+                            }}
                           >
                             编辑
                           </button>
                           <button
                             className="text-button"
                             type="button"
-                            onClick={() => setDeleteCandidate(expert)}
+                            onClick={() => !isControlsDisabled && setDeleteCandidate(expert)}
+                            disabled={isControlsDisabled}
+                            style={{ 
+                              color: isControlsDisabled ? "var(--muted)" : "inherit", 
+                              cursor: isControlsDisabled ? "not-allowed" : "pointer",
+                              opacity: isControlsDisabled ? 0.5 : 1
+                            }}
                           >
                             删除
                           </button>
@@ -2012,194 +2923,25 @@ export default function Home() {
                 const isExp = message.role === "expert";
 
                 return (
-                  <article
-                    className={`chat-message ${message.role}`}
+                  <ChatMessageCard
                     key={message.id}
-                  >
-                    <div className="message-avatar">
-                      {isUser ? "你" : isMod ? "主持" : message.senderName.slice(0, 2)}
-                    </div>
-                    <div className="message-body">
-                      {(() => {
-                        const safeContent = message.content || "";
-                        let displayContent = safeContent.replace(/[\s\n>]*$/, '');
-                        let thinkingContent = "";
-                        let isThinkingDone = false;
-                        const thinkMatch = displayContent.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
-                        
-                        if (thinkMatch) {
-                          thinkingContent = thinkMatch[1].trim();
-                          isThinkingDone = safeContent.includes("</think>");
-                          displayContent = displayContent.replace(thinkMatch[0], "").trim();
-                        } else {
-                          isThinkingDone = true;
-                        }
-
-                        const isTTFB = speakingExpertIds[activeMeetingId] === message.senderId && safeContent.length === 0;
-                        const isStartingThink = speakingExpertIds[activeMeetingId] === message.senderId && safeContent.startsWith("<") && !thinkMatch;
-
-                        return (
-                          <>
-                            {(isExp || isMod || isUser) && (
-                              <div style={{ 
-                                display: "flex", 
-                                alignItems: "flex-start", 
-                                gap: "12px", 
-                                marginBottom: "4px",
-                                justifyContent: isUser ? "flex-end" : "flex-start"
-                              }}>
-                                <span style={{ 
-                                  fontSize: "11px", 
-                                  color: "var(--muted)", 
-                                  marginTop: "2px",
-                                  flexShrink: 0
-                                }}>
-                                  {isUser ? userProfile.name : message.senderName} · {isUser ? userProfile.title : (message.senderTitle || "总监")}
-                                </span>
-                                
-                                {thinkingContent && isThinkingDone && (
-                                  <details style={{ flex: 1, textAlign: isUser ? "right" : "left" }}>
-                                    <summary style={{ 
-                                      fontSize: "11px", color: "var(--muted)", cursor: "pointer", userSelect: "none", 
-                                      fontWeight: "500", display: "inline-block",
-                                      background: "var(--surface-strong)", padding: "2px 8px", borderRadius: "999px",
-                                      border: "1px solid var(--line)"
-                                    }}>
-                                      深度思考已折叠
-                                    </summary>
-                                    <div style={{ 
-                                      fontSize: "13px", color: "var(--muted)", whiteSpace: "pre-wrap", 
-                                      fontStyle: "italic", marginTop: "8px", padding: "10px 14px", 
-                                      background: "rgba(0,0,0,0.02)", border: "1px dashed var(--line)", 
-                                      borderRadius: "6px", textAlign: "left"
-                                    }}>
-                                      {thinkingContent}
-                                    </div>
-                                  </details>
-                                )}
-                              </div>
-                            )}
-
-                            {editingMessageId === message.id ? (
-                              <div className="edit-message-container" style={{ marginTop: "4px", width: "100%", display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start" }}>
-                                <textarea
-                                  value={editingContent}
-                                  onChange={(e) => setEditingContent(e.target.value)}
-                                  autoFocus
-                                  style={{
-                                    width: "100%", maxWidth: "600px", minHeight: "80px", padding: "12px", borderRadius: "12px",
-                                    border: "1px solid var(--line)", background: "var(--surface)",
-                                    fontSize: "14px", fontFamily: "inherit", resize: "vertical",
-                                    boxShadow: "0 2px 8px rgba(0,0,0,0.05)", outline: "none"
-                                  }}
-                                />
-                                <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
-                                  <button
-                                    onClick={() => setEditingMessageId(null)}
-                                    style={{ padding: "6px 14px", borderRadius: "6px", border: "1px solid var(--line)", background: "var(--surface)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}
-                                  >
-                                    取消
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      setEditingMessageId(null);
-                                      const msgIndex = activeMeeting!.messages.findIndex(m => m.id === message.id);
-                                      const baseHistory = activeMeeting!.messages.slice(0, msgIndex);
-                                      handleSubmitDiscussion(undefined, {
-                                        targetMeetingId: activeMeetingId!,
-                                        userQuestion: editingContent,
-                                        baseHistory: baseHistory,
-                                        baseSources: message.sources || []
-                                      });
-                                    }}
-                                    style={{ padding: "6px 14px", borderRadius: "6px", border: "none", background: "var(--ink)", color: "var(--surface)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}
-                                  >
-                                    保存并重新生成
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <>
-                                {(!isThinkingDone && (isTTFB || isStartingThink || thinkingContent.length > 0)) && (
-                                  <div className="thinking-card" style={{ marginBottom: "8px", background: "transparent", border: "none", padding: "0" }}>
-                                    <div className="thinking-loader" style={{ margin: 0, opacity: 0.7 }}>
-                                      <span>
-                                        {isTTFB ? "正在审视议题" : "正在深度思考"}
-                                      </span>
-                                      <div className="dot-pulse" style={{ marginLeft: "4px" }}>
-                                        <span /><span /><span />
-                                      </div>
-                                    </div>
-                                    {isTTFB && (
-                                      <div style={{ fontSize: "12px", color: "var(--muted)", marginTop: "4px" }}>
-                                        正在结合个人对抗强度与会议历史多轮对话上下文编排论点...
-                                      </div>
-                                    )}
-                                    {thinkingContent && (
-                                      <div style={{ fontSize: "13px", color: "var(--muted)", whiteSpace: "pre-wrap", fontStyle: "italic", marginTop: "8px", paddingLeft: "12px", borderLeft: "2px solid var(--line)" }}>
-                                        {thinkingContent}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-
-                                {displayContent && (
-                                  <div className="message-hover-wrapper" style={{ display: "flex", alignItems: "flex-end", justifyContent: isUser ? "flex-end" : "flex-start", gap: "8px" }}>
-                                    {isUser && (
-                                      <button
-                                        className="message-edit-btn"
-                                        onClick={() => {
-                                          setEditingMessageId(message.id);
-                                          setEditingContent(message.content);
-                                        }}
-                                        title="重新编辑"
-                                      >
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                                        </svg>
-                                      </button>
-                                    )}
-                                    <div className="message-content markdown-body" style={{ fontSize: "14px", position: "relative", margin: 0 }}>
-                                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
-                                        {displayContent}
-                                      </ReactMarkdown>
-                                    </div>
-                                  </div>
-                                )}
-                              </>
-                            )}
-                          </>
-                        );
-                      })()}
-
-                      {message.sources && message.sources.length > 0 && (
-                        <div className="message-sources" style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "12px", justifyContent: isUser ? "flex-end" : "flex-start" }}>
-                          {message.sources.map((source) => (
-                            <div key={source.id} className="attachment-pill" style={{ background: "var(--surface)", border: "1px solid var(--line)", padding: "4px 8px", borderRadius: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
-                              <span style={{ fontSize: "10px", fontWeight: "bold", color: "var(--muted)", background: "var(--surface-strong)", padding: "2px 4px", borderRadius: "4px" }}>
-                                {source.kind.toUpperCase()}
-                              </span>
-                              <span style={{ fontSize: "13px", color: "var(--ink)", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.name}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {message.expertStance && (
-                        <div className="assistant-result" style={{ marginTop: "10px" }}>
-                          <div className="result-card" style={{ borderLeft: "3px solid var(--amber)", borderRadius: "8px" }}>
-                            <div className="result-grid">
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>立场观点：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{ensureString(message.expertStance.stance)}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>关键风险：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{ensureString(message.expertStance.concern)}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>实施建议：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{ensureString(message.expertStance.recommendation)}</ReactMarkdown></div></div>
-                              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}><strong style={{ flexShrink: 0 }}>方案取舍：</strong><div style={{ flex: 1, minWidth: 0, margin: 0 }} className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{ensureString(message.expertStance.tradeoff)}</ReactMarkdown></div></div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </article>
+                    message={message}
+                    isUser={isUser}
+                    isMod={isMod}
+                    isExp={isExp}
+                    activeMeetingId={activeMeetingId}
+                    isSessionActive={isSessionActive}
+                    userProfile={userProfile}
+                    systemPrompts={systemPrompts}
+                    allExperts={allExperts}
+                    speakingExpertId={speakingExpertIds[activeMeetingId] || null}
+                    isSynthesisPending={!!synthesisPendingMeetings[activeMeetingId]}
+                    editingMessageId={editingMessageId}
+                    editingContent={editingContent}
+                    setEditingMessageId={setEditingMessageId}
+                    setEditingContent={setEditingContent}
+                    handleSubmitDiscussion={handleSubmitDiscussion}
+                  />
                 );
               })
             ) : (
@@ -2235,7 +2977,7 @@ export default function Home() {
 
 
 
-            {assigningNextSpeaker[activeMeetingId] && (
+            {discussingMeetings[activeMeetingId] && assigningNextSpeaker[activeMeetingId] && (
               <article className="chat-message moderator">
                 <div className="message-avatar">主持</div>
                 <div className="message-body">
@@ -2253,13 +2995,14 @@ export default function Home() {
               </article>
             )}
 
-            {synthesisPendingMeetings[activeMeetingId] && (
+
+            {discussingMeetings[activeMeetingId] && inquiryPendingMeetings[activeMeetingId] && (
               <article className="chat-message moderator">
                 <div className="message-avatar">主持</div>
                 <div className="message-body">
                   <div className="thinking-card" style={{ borderStyle: "solid", borderColor: "var(--amber)", borderRadius: "8px" }}>
                     <div className="thinking-loader">
-                      <strong style={{ color: "var(--amber)" }}>主持人</strong> 正在汇总本轮会议纪要
+                      <strong style={{ color: "var(--amber)" }}>主持人</strong> 正在研判信息是否足够
                       <div className="dot-pulse">
                         <span />
                         <span />
@@ -2267,7 +3010,28 @@ export default function Home() {
                       </div>
                     </div>
                     <span style={{ fontSize: "12px", color: "var(--muted)" }}>
-                      正在综合各个智能体的共识、分歧以及下一步建议动作...
+                      正在评估输入信息是否充分，分析是否需要请求追问补充...
+                    </span>
+                  </div>
+                </div>
+              </article>
+            )}
+
+            {discussingMeetings[activeMeetingId] && generatingDecisionOptions[activeMeetingId] && (
+              <article className="chat-message moderator">
+                <div className="message-avatar">主持</div>
+                <div className="message-body">
+                  <div className="thinking-card" style={{ borderStyle: "solid", borderColor: "var(--amber)", borderRadius: "8px" }}>
+                    <div className="thinking-loader">
+                      <strong style={{ color: "var(--amber)" }}>主持人</strong> 正在提炼下一步备选方向
+                      <div className="dot-pulse">
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                    </div>
+                    <span style={{ fontSize: "12px", color: "var(--muted)" }}>
+                      正在归纳总结当前讨论焦点，为协调进一步讨论提供方向建议...
                     </span>
                   </div>
                 </div>
@@ -2287,6 +3051,369 @@ export default function Home() {
                   </div>
                   <button className="ghost-button" onClick={handleAbortConclusion} style={{ fontSize: "12px", padding: "2px 8px", minHeight: "24px", color: "var(--muted)", borderLeft: "1px solid var(--line)" }}>
                     ⏹️ 取消
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 人类引导决策控制台 (Human Steering Console) */}
+            {activeMeeting && steeringConsoleMeetingId === activeMeeting.id && (
+              <div
+                id="steering-panel"
+                className="steering-console-card"
+                onMouseEnter={handleCancelSteeringCountdown}
+                style={{
+                  margin: "20px 18px",
+                  padding: "24px",
+                  borderRadius: "16px",
+                  border: "1px dashed var(--amber)",
+                  background: "rgba(251, 191, 36, 0.05)",
+                  backdropFilter: "blur(20px)",
+                  boxShadow: "0 8px 32px rgba(25, 23, 20, 0.04)",
+                  scrollMarginTop: "24px"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+                  <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "var(--amber)", boxShadow: "0 0 10px var(--amber)" }} />
+                  <h4 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "var(--ink)" }}>
+                    决策协调看板：请选择或输入下一步决议方向
+                  </h4>
+                </div>
+
+                {generatingDecisionOptions[activeMeeting.id] ? (
+                  <div style={{ padding: "20px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: "10px" }}>
+                    <div className="dot-pulse" style={{ display: "inline-flex" }}>
+                      <span /><span /><span />
+                    </div>
+                    <span style={{ fontSize: "13px", color: "var(--muted)", fontWeight: 500 }}>
+                      AI 主持人正在深度分析专家意见，归纳提炼方向性决议选项...
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    {activeMeeting.moderatorAutonomy === "autonomous" ? (
+                      steeringCountdown !== null ? (
+                        <div style={{
+                          padding: "10px 14px",
+                          borderRadius: "8px",
+                          background: "rgba(245, 158, 11, 0.08)",
+                          border: "1px solid rgba(245, 158, 11, 0.2)",
+                          color: "#d97706",
+                          fontSize: "12.5px",
+                          fontWeight: 500,
+                          lineHeight: "1.6",
+                          marginBottom: "16px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px"
+                        }}>
+                          <span style={{ fontSize: "14px" }}>⏱️</span>
+                          <span>
+                            自主决策推进中：AI 主持人将在 <strong>{steeringCountdown} 秒</strong> 后自动选择首选方案并流转。
+                            <span style={{ textDecoration: "underline", marginLeft: "6px", cursor: "default" }}>
+                              将鼠标移入此区域可立即叫停倒计时并进行人工干预
+                            </span>
+                          </span>
+                        </div>
+                      ) : (
+                        <div style={{
+                          padding: "10px 14px",
+                          borderRadius: "8px",
+                          background: "rgba(16, 185, 129, 0.08)",
+                          border: "1px solid rgba(16, 185, 129, 0.2)",
+                          color: "#059669",
+                          fontSize: "12.5px",
+                          fontWeight: 500,
+                          lineHeight: "1.6",
+                          marginBottom: "16px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px"
+                        }}>
+                          <span style={{ fontSize: "14px" }}>💡</span>
+                          <span>自动决策倒计时已被人类打断。会议流转已挂起，请人类决策者手动选择意见卡片或在下方输入指令进行引导。</span>
+                        </div>
+                      )
+                    ) : (
+                      <p style={{ fontSize: "12.5px", color: "var(--muted)", marginBottom: "16px", lineHeight: "1.6" }}>
+                        本轮专家评审与总结已提炼完成。AI 主持人根据刚才的讨论，为您归纳了以下方向性的备选决策方案。请您做最终的裁决：
+                      </p>
+                    )}
+
+                    {/* 方向性决策选项单选卡片列表 */}
+                    {(() => {
+                      const isCustomInputActive = steeringInput.trim().length > 0;
+                      return (
+                        <>
+                          <div style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: "10px",
+                            marginBottom: "20px",
+                            opacity: isCustomInputActive ? 0.4 : 1,
+                            pointerEvents: isCustomInputActive ? "none" : "auto",
+                            transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)"
+                          }}>
+                            {(meetingDecisionOptions[activeMeeting.id] || []).map((option, idx) => {
+                              const isSelected = selectedDecisionOption === option;
+                              return (
+                                <div
+                                  key={idx}
+                                  onClick={() => {
+                                    setSelectedDecisionOption(isSelected ? "" : option);
+                                  }}
+                                  style={{
+                                    padding: "14px 18px",
+                                    borderRadius: "10px",
+                                    border: `1.5px solid ${isSelected ? "var(--amber)" : "var(--line)"}`,
+                                    background: isSelected ? "var(--amber-soft)" : "rgba(255, 255, 255, 0.4)",
+                                    boxShadow: isSelected ? "0 4px 16px rgba(180, 110, 10, 0.08)" : "none",
+                                    color: isSelected ? "#854d0e" : "var(--ink)",
+                                    fontSize: "13.5px",
+                                    fontWeight: isSelected ? 600 : 500,
+                                    lineHeight: "1.5",
+                                    cursor: "pointer",
+                                    transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)"
+                                  }}
+                                >
+                                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                                    <span style={{
+                                      width: "16px",
+                                      height: "16px",
+                                      borderRadius: "50%",
+                                      border: "1px solid var(--muted-light)",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      justifyContent: "center",
+                                      background: "var(--surface)",
+                                      flexShrink: 0
+                                    }}>
+                                      {isSelected && <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "var(--amber)" }} />}
+                                    </span>
+                                    <span>{option}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {selectedDecisionOption && !isCustomInputActive && (
+                            <div style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              padding: "8px 12px",
+                              borderRadius: "8px",
+                              background: "var(--amber-soft)",
+                              border: "1px dashed rgba(245, 158, 11, 0.3)",
+                              marginBottom: "10px",
+                              fontSize: "12px",
+                              color: "#854d0e",
+                              animation: "fadeIn 0.2s ease-out"
+                            }}>
+                              <span>💡 想要在此方向上微调？</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSteeringInput(selectedDecisionOption);
+                                  setSelectedDecisionOption("");
+                                  textareaRef.current?.focus();
+                                }}
+                                style={{
+                                  padding: "3px 8px",
+                                  borderRadius: "4px",
+                                  background: "var(--amber)",
+                                  color: "#fff",
+                                  border: "none",
+                                  fontSize: "11px",
+                                  fontWeight: 600,
+                                  cursor: "pointer",
+                                  transition: "background 0.2s"
+                                }}
+                              >
+                                ✍️ 导入下方编辑
+                              </button>
+                            </div>
+                          )}
+
+                          <div className="compact-field" style={{ marginBottom: "16px" }}>
+                            <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--muted)", display: "block", marginBottom: "8px" }}>
+                              ✍️ 补充额外决策指令或修正说明：
+                            </span>
+                            <textarea
+                              ref={textareaRef}
+                              placeholder="在此手写您希望专家下一轮论证的补充背景、方案修改、或新决策意见..."
+                              value={steeringInput}
+                              onChange={e => {
+                                setSteeringInput(e.target.value);
+                                if (e.target.value.trim().length > 0) {
+                                  setSelectedDecisionOption("");
+                                }
+                              }}
+                              style={{
+                                width: "100%",
+                                minHeight: "80px",
+                                padding: "12px",
+                                borderRadius: "10px",
+                                border: "1px solid var(--line-strong)",
+                                background: "var(--surface)",
+                                fontSize: "13px",
+                                lineHeight: "1.5",
+                                outline: "none"
+                              }}
+                            />
+                          </div>
+
+                          <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => {
+                                if (window.confirm("确定要取消并终止本轮讨论吗？这将结束当前的专家圆桌会议，已有的讨论观点将被保留。")) {
+                                  handleAbort();
+                                  setSteeringInput("");
+                                  setSelectedDecisionOption("");
+                                }
+                              }}
+                              style={{
+                                fontSize: "12.5px",
+                                padding: "8px 16px",
+                                borderColor: "var(--red)",
+                                color: "var(--red)",
+                                background: "rgba(239, 68, 68, 0.05)"
+                              }}
+                            >
+                              ❌ 取消并终止讨论
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              onClick={() => {
+                                facilitativeResolverRef.current?.resolve({ type: "finish" });
+                                setSteeringInput("");
+                                setSelectedDecisionOption("");
+                              }}
+                              style={{ fontSize: "12.5px", padding: "8px 16px" }}
+                            >
+                              🏁 达成共识，结案陈词
+                            </button>
+                            <button
+                              type="button"
+                              className="primary-button"
+                              disabled={!selectedDecisionOption && !steeringInput.trim()}
+                              onClick={() => {
+                                const finalOpinion = steeringInput.trim() || selectedDecisionOption;
+                                facilitativeResolverRef.current?.resolve({
+                                  type: "choose",
+                                  opinion: finalOpinion
+                                });
+                                setSteeringInput("");
+                                setSelectedDecisionOption("");
+                              }}
+                              style={{
+                                fontSize: "12.5px",
+                                padding: "8px 20px",
+                                background: "var(--amber)",
+                                borderColor: "var(--amber)"
+                              }}
+                            >
+                              🚀 提交并进入下一轮讨论
+                            </button>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* 信息索取追问控制台 (Inquiry Console) */}
+            {activeMeeting && inquiryConsoleMeetingId === activeMeeting.id && (
+              <div className="steering-console-card" style={{
+                margin: "20px 18px",
+                padding: "24px",
+                borderRadius: "16px",
+                border: "1px dashed var(--amber)",
+                background: "rgba(251, 191, 36, 0.05)",
+                backdropFilter: "blur(20px)",
+                boxShadow: "0 8px 32px rgba(25, 23, 20, 0.04)"
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+                  <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "var(--amber)", boxShadow: "0 0 10px var(--amber)" }} />
+                  <h4 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "var(--ink)" }}>
+                    信息澄清控制台：启动前置信息补充校验
+                  </h4>
+                </div>
+                <p style={{ fontSize: "12.5px", color: "var(--muted)", marginBottom: "12px", lineHeight: "1.6" }}>
+                  主持人对您刚刚输入的信息进行了智能判定，为了便于各位参会专家做出精准、切合客观场景的方案评估，请您补充或校准以下关键背景数据：
+                </p>
+                <div style={{
+                  padding: "12px 16px",
+                  borderRadius: "10px",
+                  background: "var(--surface-strong)",
+                  border: "1px solid var(--line-strong)",
+                  fontSize: "13.5px",
+                  color: "var(--ink-soft)",
+                  lineHeight: "1.6",
+                  marginBottom: "16px"
+                }}>
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <span style={{ flexShrink: 0 }}>💡 <strong>问询问题：</strong></span>
+                    <div style={{ flex: 1, minWidth: 0 }} className="markdown-body">
+                      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]} rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}>
+                        {inquiryPromptText}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                </div>
+
+                <textarea
+                  placeholder="在此输入需要补充的数据事实、架构参数、或环境限制说明..."
+                  value={inquiryInput}
+                  onChange={e => setInquiryInput(e.target.value)}
+                  style={{
+                    width: "100%",
+                    minHeight: "80px",
+                    padding: "12px",
+                    borderRadius: "10px",
+                    border: "1px solid var(--line-strong)",
+                    background: "var(--surface)",
+                    fontSize: "13px",
+                    lineHeight: "1.5",
+                    marginBottom: "16px",
+                    outline: "none"
+                  }}
+                />
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => {
+                      inquiryResolverRef.current?.resolve({ type: "skip" });
+                      setInquiryInput("");
+                    }}
+                    style={{ fontSize: "12.5px", padding: "8px 16px" }}
+                  >
+                    跳过追问，正常推进
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={!inquiryInput.trim()}
+                    onClick={() => {
+                      inquiryResolverRef.current?.resolve({ type: "submit", content: inquiryInput.trim() });
+                      setInquiryInput("");
+                    }}
+                    style={{
+                      fontSize: "12.5px",
+                      padding: "8px 20px",
+                      background: "var(--amber)",
+                      borderColor: "var(--amber)"
+                    }}
+                  >
+                    提交数据并继续判定
                   </button>
                 </div>
               </div>
@@ -2330,7 +3457,10 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="markdown-body" style={{ fontSize: "14px", color: "var(--ink)" }}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                    <ReactMarkdown 
+                      remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+                      rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
+                    >
                       {activeMeeting.finalConclusion}
                     </ReactMarkdown>
                   </div>
@@ -2444,83 +3574,119 @@ export default function Home() {
 
                   {/* 内嵌的会议设置项 (胶囊控制台方案) */}
                   {activeMeeting && (
-                    <div style={{ display: "flex", gap: "8px", padding: "4px 8px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "8px", alignItems: "center" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>主持</span>
-                        <select
-                          className="toolbar-select"
-                          value={activeMeeting.moderatorId}
-                          onChange={(e) => void updateActiveMeeting({ moderatorId: e.target.value })}
-                          title="主持风格"
-                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
-                        >
-                          {moderatorModes.map(m => (
-                            <option key={m.id} value={m.id}>{m.name}</option>
-                          ))}
-                        </select>
-                      </div>
+                    <div style={{ display: "flex", gap: "6px", padding: "4px 8px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                      {/* 主持 + 风格/机制/模式 三联下拉 */}
+                      <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>主持</span>
+                      <select
+                        className="toolbar-select select-moderator"
+                        value={activeMeeting.moderatorId}
+                        onChange={(e) => void updateActiveMeeting({ moderatorId: e.target.value })}
+                        disabled={isControlsDisabled}
+                        title="主持风格"
+                        style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
+                      >
+                        {moderatorModes.map(m => (
+                          <option key={m.id} value={m.id}>{m.name}</option>
+                        ))}
+                      </select>
+                      <select 
+                        className="toolbar-select select-moderator"
+                        value={activeMeeting.turnOrderMode}
+                        onChange={(e) => void updateActiveMeeting({ turnOrderMode: e.target.value as any })}
+                        disabled={isControlsDisabled}
+                        title="发言机制"
+                        style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
+                      >
+                        <option value="sequential">顺序发言</option>
+                        <option value="relevance">动态指派</option>
+                        <option value="manual">点名发言</option>
+                      </select>
+                      <select 
+                        className="toolbar-select select-moderator"
+                        value={activeMeeting.moderatorAutonomy || "facilitative"}
+                        onChange={(e) => {
+                          const nextAutonomy = e.target.value as any;
+                          const updates: Partial<Meeting> = { moderatorAutonomy: nextAutonomy };
+                          if (nextAutonomy === "autonomous") {
+                            updates.enableInquiryLoop = false;
+                          }
+                          void updateActiveMeeting(updates);
+                        }}
+                        disabled={isControlsDisabled}
+                        title="主持模式"
+                        style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
+                      >
+                        <option value="passive">被动传统</option>
+                        <option value="facilitative">协调引导</option>
+                        <option value="autonomous">自主决策</option>
+                      </select>
 
                       <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
 
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>机制</span>
+                      {/* 追问 */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
+                        <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>追问</span>
                         <select 
-                          className="toolbar-select"
-                          value={activeMeeting.turnOrderMode}
-                          onChange={(e) => void updateActiveMeeting({ turnOrderMode: e.target.value as any })}
-                          title="发言顺序"
-                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
+                          className="toolbar-select select-inquiry"
+                          value={activeMeeting.moderatorAutonomy === "autonomous" ? "false" : (activeMeeting.enableInquiryLoop ? "true" : "false")}
+                          onChange={(e) => void updateActiveMeeting({ enableInquiryLoop: e.target.value === "true" })}
+                          disabled={activeMeeting.moderatorAutonomy === "autonomous" || isControlsDisabled}
+                          title="信息追问开关"
+                          style={{ cursor: (activeMeeting.moderatorAutonomy === "autonomous" || isControlsDisabled) ? "not-allowed" : "pointer", opacity: (activeMeeting.moderatorAutonomy === "autonomous" || isControlsDisabled) ? 0.5 : 1 }}
                         >
-                          <option value="sequential">顺序发言</option>
-                          <option value="relevance">动态指派</option>
-                          <option value="manual">手动点名</option>
+                          <option value="true">开启</option>
+                          <option value="false">关闭</option>
                         </select>
                       </div>
 
                       <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
 
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                      {/* 火力 */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
                         <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>火力</span>
                         <select
-                          className="toolbar-select"
+                          className="toolbar-select select-intensity"
                           value={activeMeeting.globalDebateIntensity}
                           onChange={(e) => void updateActiveMeeting({ globalDebateIntensity: Number(e.target.value) })}
+                          disabled={isControlsDisabled}
                           title="对抗强度"
-                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
+                          style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
                         >
-                          <option value="1">1 (温和)</option>
-                          <option value="2">2 (建设)</option>
-                          <option value="3">3 (客观)</option>
-                          <option value="4">4 (尖锐)</option>
-                          <option value="5">5 (极限)</option>
+                          <option value="1">1</option>
+                          <option value="2">2</option>
+                          <option value="3">3</option>
+                          <option value="4">4</option>
+                          <option value="5">5</option>
                         </select>
                       </div>
 
                       <div style={{ width: "1px", height: "12px", background: "var(--line)" }} />
-                      
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+
+                      {/* 引擎 */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "3px" }}>
                         <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>引擎</span>
                         <select 
-                          className="toolbar-select" 
+                          className="toolbar-select select-engine" 
                           value={activeEngineId} 
                           onChange={(e) => void handleSelectEngine(e.target.value)}
+                          disabled={isControlsDisabled}
                           title="选择模型引擎"
-                          style={{ background: "transparent", border: "none", padding: "0 4px", fontSize: "12px", outline: "none", cursor: "pointer", color: "var(--ink-soft)" }}
+                          style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
                         >
                           <option value="system-env">系统内置</option>
                           {engineConfigs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
                       </div>
 
-                      {/* 结论触发按钮（集成在控制台最右侧） */}
+                      {/* 提炼结论按钮 */}
                       {activeMeeting && activeMeeting.messages.length > 2 && (!activeMeeting.finalConclusion || unlockedComposers[activeMeetingId]) && (
                         <>
-                          <div style={{ width: "1px", height: "12px", background: "var(--line)", marginLeft: "4px" }} />
+                          <div style={{ width: "1px", height: "12px", background: "var(--line)", marginLeft: "auto" }} />
                           <button
                             type="button"
                             className="ghost-button"
-                            onClick={handleGenerateConclusion}
-                            disabled={generatingConclusions[activeMeetingId]}
+                            onClick={() => void handleGenerateConclusion()}
+                            disabled={generatingConclusions[activeMeetingId] || isSessionActive}
                             style={{ 
                               fontSize: "12px", 
                               padding: "2px 8px", 
@@ -2531,7 +3697,8 @@ export default function Home() {
                               display: "flex", 
                               alignItems: "center", 
                               gap: "4px",
-                              opacity: generatingConclusions[activeMeetingId] ? 0.5 : 1
+                              opacity: (generatingConclusions[activeMeetingId] || isSessionActive) ? 0.5 : 1,
+                              cursor: (generatingConclusions[activeMeetingId] || isSessionActive) ? "not-allowed" : "pointer"
                             }}
                             title={activeMeeting.finalConclusion ? "更新最终结论" : "提炼最终结论"}
                           >
@@ -2602,12 +3769,12 @@ export default function Home() {
               </div>
               <form onSubmit={handleConfirmCreateMeeting} style={{ padding: "0 24px" }}>
                 <label className="compact-field">
-                  <span>会议名称</span>
-                  <input required value={newMeetingDraft.name || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, name: e.target.value})} />
+                  <span>会议主题 / 议题名称</span>
+                  <input required placeholder="例如：核心支付接口防抖设计与重构方案" value={newMeetingDraft.name || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, name: e.target.value})} />
                 </label>
                 <label className="compact-field">
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                    <span style={{ marginBottom: 0 }}>会议描述 (核心议题上下文)</span>
+                    <span style={{ marginBottom: 0 }}>议题背景与核心上下文 (Context)</span>
                     <button
                       type="button"
                       onClick={handleGenerateMeetingDesc}
@@ -2622,23 +3789,55 @@ export default function Home() {
                       ✨ {isGeneratingMeetingDesc ? "生成中..." : "AI 自动完善"}
                     </button>
                   </div>
-                  <textarea style={{ minHeight: "80px" }} required value={newMeetingDraft.description || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, description: e.target.value})} />
+                  <textarea style={{ minHeight: "80px" }} required placeholder="在此输入该评审议题的背景、设计草案、核心代码或面临的技术疑难，以便 AI 专家进行精准评审..." value={newMeetingDraft.description || ""} onChange={e => setNewMeetingDraft({...newMeetingDraft, description: e.target.value})} />
                 </label>
                 <label className="compact-field">
-                  <span>全局辩论强度 (1-5)</span>
-                  <input type="number" min="1" max="5" required value={newMeetingDraft.globalDebateIntensity || 3} onChange={e => setNewMeetingDraft({...newMeetingDraft, globalDebateIntensity: parseInt(e.target.value)})} />
+                  <span>辩论激烈程度 (1-5)</span>
+                  <input type="number" min="1" max="5" required placeholder="默认等级为 3。值越高，专家之间的对抗与质疑越剧烈" value={newMeetingDraft.globalDebateIntensity || 3} onChange={e => setNewMeetingDraft({...newMeetingDraft, globalDebateIntensity: parseInt(e.target.value)})} />
                 </label>
                 <label className="compact-field">
-                  <span>流转模式</span>
+                  <span>发言流转机制</span>
                   <select required value={newMeetingDraft.turnOrderMode || "sequential"} onChange={e => setNewMeetingDraft({...newMeetingDraft, turnOrderMode: e.target.value as any})}>
                     <option value="sequential">顺序发言</option>
-                    <option value="relevance">智能相关度派单</option>
-                    <option value="manual">手动点名</option>
+                    <option value="relevance">动态指派</option>
+                    <option value="manual">点名发言</option>
+                  </select>
+                </label>
+                <label className="compact-field">
+                  <span>主持人决策模式</span>
+                  <select 
+                    required 
+                    value={newMeetingDraft.moderatorAutonomy || "facilitative"} 
+                    onChange={e => {
+                      const val = e.target.value as any;
+                      const updates: Partial<Meeting> = { moderatorAutonomy: val };
+                      if (val === "autonomous") {
+                        updates.enableInquiryLoop = false;
+                      }
+                      setNewMeetingDraft({ ...newMeetingDraft, ...updates });
+                    }}
+                  >
+                    <option value="passive">被动传统</option>
+                    <option value="facilitative">协调引导</option>
+                    <option value="autonomous">自主决策</option>
+                  </select>
+                </label>
+                <label className="compact-field">
+                  <span>信息自动追问 (Inquiry)</span>
+                  <select 
+                    required 
+                    value={newMeetingDraft.moderatorAutonomy === "autonomous" ? "false" : (newMeetingDraft.enableInquiryLoop ? "true" : "false")} 
+                    onChange={e => setNewMeetingDraft({...newMeetingDraft, enableInquiryLoop: e.target.value === "true"})}
+                    disabled={newMeetingDraft.moderatorAutonomy === "autonomous"}
+                    style={{ opacity: newMeetingDraft.moderatorAutonomy === "autonomous" ? 0.5 : 1 }}
+                  >
+                    <option value="true">开启（当上下文缺失时由主持人追问澄清）</option>
+                    <option value="false">关闭（忽略不全信息，直接总结）</option>
                   </select>
                 </label>
                 <div className="modal-actions" style={{ padding: "24px 0", marginTop: "8px" }}>
                   <button type="button" className="ghost-button" onClick={() => setIsMeetingModalOpen(false)}>取消</button>
-                  <button type="submit" className="primary-button">{meetingModalMode === "create" ? "创建会议" : "保存修改"}</button>
+                  <button type="submit" className="primary-button">{meetingModalMode === "create" ? "创建评审圆桌" : "保存圆桌设置"}</button>
                 </div>
               </form>
             </section>

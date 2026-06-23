@@ -148,10 +148,14 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
         systemPrompt: initialData?.systemPrompt || "",
         debateIntensity: initialData?.debateIntensity || 3,
         focus: initialData?.focus || [],
-        isCustom: initialData?.isCustom ?? true,
+        isCustom: initialData?.isCustom ?? (initialData?.id ? false : true),
         isExternalAgent: initialData?.isExternalAgent ?? false,
         agentType: initialData?.agentType || "openclaw",
         botToken: initialData?.botToken || "",
+        ragEnabled: initialData?.ragEnabled ?? false,
+        ragEndpoint: initialData?.ragEndpoint || "",
+        ragToken: initialData?.ragToken || "",
+        ragDatasetId: initialData?.ragDatasetId || "",
       });
       setError(null);
     }
@@ -190,6 +194,10 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
       isCustom: draft.isCustom,
       isExternalAgent: draft.isExternalAgent,
       botToken: draft.isExternalAgent ? draft.botToken : undefined,
+      ragEnabled: draft.isExternalAgent ? false : draft.ragEnabled,
+      ragEndpoint: draft.isExternalAgent ? undefined : draft.ragEndpoint,
+      ragToken: draft.isExternalAgent ? undefined : draft.ragToken,
+      ragDatasetId: draft.isExternalAgent ? undefined : draft.ragDatasetId,
     };
 
     onSave(finalExpert);
@@ -359,36 +367,51 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                   </button>
                 </div>
 
+                {isGeneratingExpert && (
+                  <div className="assistant-result" style={{ marginTop: "10px", marginBottom: "16px" }}>
+                    <div className="result-card" style={{ borderLeft: "3px solid var(--amber)", borderRadius: "8px", background: "rgba(245, 158, 11, 0.02)" }}>
+                      <div className="thinking-loader" style={{ margin: "4px 0", fontSize: "13px" }}>
+                        <strong style={{ color: "var(--amber)" }}>AI 决策秘书</strong> 正在自动提炼并补全专家人设
+                        <div className="dot-pulse" style={{ marginLeft: "6px" }}>
+                          <span /><span /><span />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <label className="compact-field">
-                  <span>审视该议题的专业视角 (Lens) *<InfoTooltip text="给大模型的强制要求：该专家必须从哪个专门的角度来评估会议议题？" /></span>
-                  <input required placeholder="说明该智能体着重关注哪些点" value={draft.lens || ""} onChange={e => setDraft({ ...draft, lens: e.target.value })} />
+                  <span>通用专业审视视角 (Lens) *<InfoTooltip text="当面对不同会议议题时，该角色习惯从哪个专门的专业角度进行剖析？（例如：系统架构稳定性、终端用户使用旅程等，请使用通用且不局限于特定设计方案的表述）" /></span>
+                  <input required placeholder="说明该智能体着重关注哪些点" value={draft.lens || ""} onChange={e => setDraft({ ...draft, lens: e.target.value })} disabled={isGeneratingExpert} />
                 </label>
 
                 <label className="compact-field">
                   <span>智能体性格脾气 (Temperament)<InfoTooltip text="控制专家的说话语气，比如严厉、温和、讽刺等" /></span>
-                  <input placeholder="如：极其挑剔、强迫症、极其保守" value={draft.temperament || ""} onChange={e => setDraft({ ...draft, temperament: e.target.value })} />
+                  <input placeholder="如：极其挑剔、强迫症、极其保守" value={draft.temperament || ""} onChange={e => setDraft({ ...draft, temperament: e.target.value })} disabled={isGeneratingExpert} />
                 </label>
 
                 <label className="compact-field">
-                  <span>核心关注指标 (Focus)<InfoTooltip text="该智能体最关心的几个业务指标 or 评估维度，请用英文逗号分隔" /></span>
+                  <span>通用关注重点 (Focus)<InfoTooltip text="该角色看问题时最聚焦的几个核心维度，请用英文逗号分隔（例如：交付效能, 系统解耦, 开发成本等）" /></span>
                   <input
                     placeholder="如：转化率, 用户留存, 获客成本"
                     value={draft.focus?.join(", ") || ""}
                     onChange={e => setDraft({ ...draft, focus: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
+                    disabled={isGeneratingExpert}
                   />
                 </label>
                 <label className="compact-field">
-                  <span>底层人设提示词 (System Prompt) *<InfoTooltip text="这部分将作为 System Role 完整注入大模型" /></span>
+                  <span>底层人设提示词 (System Prompt) *<InfoTooltip text="大模型的底层价值观设定。请重点陈述该专家的核心利益偏好、价值观底线以及看问题的底层利益立场（作为 System Role 完整注入，请使用跨议题通用的表述）" /></span>
                   <textarea
                     required
                     placeholder="可以填入该智能体专属的完整 System Setting。"
                     value={draft.systemPrompt || ""}
                     onChange={e => setDraft({ ...draft, systemPrompt: e.target.value })}
+                    disabled={isGeneratingExpert}
                     style={{ width: "100%", height: "120px", fontFamily: "monospace", resize: "vertical", fontSize: "13px", lineHeight: 1.5 }}
                   />
                 </label>
 
-                <label className="compact-field">
+                <label className="compact-field" style={{ marginBottom: "16px" }}>
                   <span>默认辩论激烈度：{draft.debateIntensity}<InfoTooltip text="1为温和赞同，5为猛烈抨击。此值将与会议全局强度取平均，决定该专家的最终表现" /></span>
                   <input
                     type="range"
@@ -396,9 +419,67 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                     max="5"
                     value={draft.debateIntensity || 3}
                     onChange={(e) => setDraft({ ...draft, debateIntensity: Number(e.target.value) })}
+                    disabled={isGeneratingExpert}
                     style={{ width: "100%", marginTop: "8px" }}
                   />
                 </label>
+
+                {/* 是否开启 RAG 检索 */}
+                <label className={`external-agent-toggle-card ${draft.ragEnabled ? "is-checked" : ""}`} style={{ marginTop: "16px", marginBottom: "12px" }}>
+                  <div className="toggle-switch-label-area">
+                    <span className="toggle-switch-title" style={{ display: "flex", alignItems: "center", fontWeight: 600 }}>
+                      挂载外部 RAG 知识库检索
+                      <InfoTooltip text="开启后，大模型在分析评审当前议题时会从配置的外部数据库中自动检索相关事实并结合评审。" />
+                    </span>
+                  </div>
+                  <div style={{ display: "inline-flex", alignItems: "center" }}>
+                    <input
+                      type="checkbox"
+                      className="switch-control-input"
+                      checked={draft.ragEnabled || false}
+                      onChange={e => {
+                        setDraft(prev => ({
+                          ...prev,
+                          ragEnabled: e.target.checked
+                        }));
+                      }}
+                    />
+                    <span className="switch-control-track">
+                      <span className="switch-control-thumb" />
+                    </span>
+                  </div>
+                </label>
+
+                {draft.ragEnabled && (
+                  <div className="external-agent-config-panel" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", padding: "16px", marginTop: "4px", marginBottom: "16px", background: "var(--surface-strong)", border: "1px solid var(--line-strong)", borderRadius: "8px" }}>
+                    <label className="compact-field" style={{ gridColumn: "span 2", marginBottom: 0 }}>
+                      <span>RAG 知识库 API 端点地址 *<InfoTooltip text="接收 POST 请求并返回 JSON { chunks: string[] } 格式的检索端点" /></span>
+                      <input
+                        required
+                        placeholder="如：https://api.dify.ai/v1/datasets/retrieval"
+                        value={draft.ragEndpoint || ""}
+                        onChange={e => setDraft(prev => ({ ...prev, ragEndpoint: e.target.value }))}
+                      />
+                    </label>
+                    <label className="compact-field" style={{ marginBottom: 0 }}>
+                      <span>鉴权 Token (Bearer Token)<InfoTooltip text="调用该 RAG 接口所必须的 Authorization 鉴权密钥" /></span>
+                      <input
+                        type="password"
+                        placeholder="请输入鉴权密钥 (可选)"
+                        value={draft.ragToken || ""}
+                        onChange={e => setDraft(prev => ({ ...prev, ragToken: e.target.value }))}
+                      />
+                    </label>
+                    <label className="compact-field" style={{ marginBottom: 0 }}>
+                      <span>数据集/集合标识 ID (Dataset ID)<InfoTooltip text="特定匹配的目标检索知识库库集合 ID (可选)" /></span>
+                      <input
+                        placeholder="请输入目标数据集 ID (可选)"
+                        value={draft.ragDatasetId || ""}
+                        onChange={e => setDraft(prev => ({ ...prev, ragDatasetId: e.target.value }))}
+                      />
+                    </label>
+                  </div>
+                )}
               </>
             )}
 

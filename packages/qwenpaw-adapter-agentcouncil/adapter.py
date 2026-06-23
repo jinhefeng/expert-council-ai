@@ -243,16 +243,14 @@ class DesignCouncilQwenPawAdapter:
         previous_turns = data.get("previousTurns", [])
         expert_name = data.get("expertName", "未知专家")
         expert_title = data.get("expertTitle", "未知头衔")
+        external_prompt_tpl = data.get("externalAgentPrompt")
+        user_title = data.get("userTitle") or "首席决策官"
+        user_name = data.get("userName") or "主持人"
 
         print(f"[QwenPaw-Adapter] 收到发言令牌. 会议ID: {data.get('meetingId')}, 轮次ID: {turn_id}")
 
-        # 拼接提供给模型的消息
-        prompt = (
-            f"你当前在会议中扮演的角色是【{expert_name}】，核心头衔是【{expert_title}】。\n"
-            f"当前评审议题：{question}\n"
-            f"项目背景：{context}\n"
-            f"此前会议发言：\n"
-        )
+        # 整理以往会议发言拼接文本
+        previous_turns_text = ""
         for t in previous_turns:
             content = t.get('content') or ""
             # 清洗 think
@@ -261,13 +259,51 @@ class DesignCouncilQwenPawAdapter:
             if think_idx != -1:
                 content = content[:think_idx]
             
-            lines = content.strip().split('\n')
-            formatted_lines = [f"> {line}" for line in lines]
-            blockquote = '\n'.join(formatted_lines)
-            prompt += f"【{t.get('expertName')}】发言：\n{blockquote}\n\n"
+            t_name = t.get('expertName') or "未知专家"
+            t_title = t.get('expertTitle') or "未知头衔"
+            previous_turns_text += (
+                f"┌──────────────────────────────────────────\n"
+                f"│ 参会专家发言观点：{t_name} ({t_title})\n"
+                f"└──────────────────────────────────────────\n"
+                f"{content.strip()}\n\n"
+            )
 
-        prompt += "\n请对该方案进行评审，并用中文给出修改意见。在发言末尾，必须输出如下结构化 JSON 摘要：\n"
-        prompt += '```json\n{\n  "stance": "您的核心立场",\n  "concern": "最担忧的风险",\n  "recommendation": "可落地建议",\n  "tradeoff": "为了做这个决策需要付出的牺牲/妥协"\n}\n```'
+        if not previous_turns_text:
+            previous_turns_text = "本轮中你是第一个发言的专家。"
+        else:
+            previous_turns_text = previous_turns_text.strip()
+
+        if external_prompt_tpl and external_prompt_tpl.strip():
+            # 动态替换模板中的占位符
+            prompt = external_prompt_tpl
+            prompt = prompt.replace("{question}", question)
+            prompt = prompt.replace("{context}", context)
+            prompt = prompt.replace("{previousTurns}", previous_turns_text)
+            prompt = prompt.replace("{expertName}", expert_name)
+            prompt = prompt.replace("{expertTitle}", expert_title)
+            prompt = prompt.replace("{userTitle}", user_title)
+            prompt = prompt.replace("{userName}", user_name)
+        else:
+            # 平滑降级至默认硬编码拼接格式
+            prompt = (
+                f"你当前在会议中扮演的角色是【{expert_name}】，核心头衔是【{expert_title}】。\n"
+                f"当前来自人类决策者（{user_title} {user_name}）的现场干预与最新指令：\n{question}\n"
+                f"项目背景：{context}\n"
+                f"此前会议发言：\n{previous_turns_text}\n"
+            )
+            prompt += (
+                "\n请针对上述讨论，发表您的专家评审意见。请使用简体中文进行专业且具有对抗性的回答。\n"
+                "【思维链指引】：如果您的模型支持推理/思考（Reasoning/Thinking），请将您的完整思考和推理过程输出在 `<think>...</think>` 标签内，随后再输出您的正式评审意见。\n"
+                "在回答的最后，必须附带如下格式的纯 JSON 结构化摘要：\n"
+                "```json\n"
+                "{\n"
+                '  "stance": "您的核心立场",\n'
+                '  "concern": "最担忧的风险",\n'
+                '  "recommendation": "具体可落地建议",\n'
+                '  "tradeoff": "做此项决策必须付出的取舍"\n'
+                "}\n"
+                "```"
+            )
 
         # 模拟/调用 Agent 思考并流式返回
         reply_text = ""

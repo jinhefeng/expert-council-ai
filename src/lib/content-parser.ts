@@ -16,7 +16,7 @@ export interface ExpertStance {
  * @param rawText 原始文本流
  * @param expertName 当前发言专家的自定义名字（动态匹配截断）
  */
-export function extractAndCleanJson(rawText: string, expertName: string): {
+export function extractAndCleanJson(rawText: string, expertName: string, expertTitle?: string): {
   content: string;
   expertStance: ExpertStance;
 } {
@@ -40,70 +40,53 @@ export function extractAndCleanJson(rawText: string, expertName: string): {
 
   // 1.4 智能剥离中文客套话、扮演确认语等前导碎碎念
   const myCoreName = (expertName || "").split(/[\s(（]/)[0].trim();
-  if (myCoreName) {
-    // 匹配 "好的，我将扮演专家小蔚进行发言：" 或 "小蔚发言如下：" 或 "我的发言如下：" 等
+  const myCoreTitle = (expertTitle || "").split(/[\s(（]/)[0].trim();
+  let hasStrippedSelfPrefix = false;
+  // 收集需要匹配的所有身份标识（name + title 去重），解决大模型用头衔（如"董事长"）自称时正则无法命中的问题
+  const identityTokens = [...new Set([myCoreName, myCoreTitle].filter(Boolean))];
+  if (identityTokens.length > 0) {
+    // 1.4.1 强力剥离当前专家本人的角色名及头衔的各种前缀变体（如 【董事长】：、董事长：、董事长发言如下：等，支持中括号及换行变体）
+    const identityAlt = identityTokens.join("|");
+    const selfPrefixPattern = new RegExp(
+      `^[\\s\\n]*(?:【[^】]*(?:${identityAlt})[^】]*】|(?:${identityAlt})[^：:\\n]*)[\\s\\n]*(?:[：:发言]+|\\n+)[\\s\\n]*`,
+      "i"
+    );
+    if (selfPrefixPattern.test(text)) {
+      text = text.replace(selfPrefixPattern, "");
+      hasStrippedSelfPrefix = true;
+    }
+
+    // 1.4.2 匹配 "好的，我将扮演专家小蔚进行发言：" 或 "小蔚发言如下：" 或 "我的发言如下：" 等
+    const identityPreambleAlt = identityTokens.join("|");
     const chinesePreamblePattern = new RegExp(
-      `^[\\s\\n]*(?:好的|收到|明白|遵命)?[，。]?(?:我将|我需要|接下来我将)?(?:代表|扮演)?(?:专家)?(?:${myCoreName})?(?:的身份)?(?:发表|进行)?(?:本次|关于此议题的)?(?:发言|评论|视角|意见|回答)?[：:\\s\\n]*(?:我的(?:具体)?发言如下|以下是我的发言|发言如下)?[：:\\s\\n]*`,
+      `^[\\s\\n]*(?:好的|收到|明白|遵命)?[，。]?(?:我将|我需要|接下来我将)?(?:代表|扮演)?(?:专家)?(?:${identityPreambleAlt})?(?:的身份)?(?:发表|进行)?(?:本次|关于此议题的)?(?:发言|评论|视角|意见|回答)?[：:\\s\\n]*(?:我的(?:具体)?发言如下|以下是我的发言|发言如下)?[：:\\s\\n]*`,
       "i"
     );
     text = text.replace(chinesePreamblePattern, "");
   }
   text = text.trim();
 
-  // 2. 动态剧本角色串扰截断 (Crosstalk Truncation)
-  // 如果文本中包含 \n【角色名】 或 【角色名】，且角色名与本专家不同，说明大模型脑补了剧本续写。
-  // 我们检测：在新起一行出现 【xxx】 且 xxx !== expertName 的情况。
-  // 我们支持 【角色】、 【角色(Title)】、 【角色 (Title)】 等格式匹配。
-  // 比如：【董事长】 或者 【董事长 (董事长)】 都是代表角色。
-  // 我们用正则解析出中括号内的文本，剥离其可能含有的括号备注，然后比对。
-  const lines = text.split("\n");
-  let cutIndex = -1;
-  let charCounter = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    // 匹配类似: 【董事长】： 或 【董事长 (董事长)】： 或 【主持人】：
-    const match = line.match(/^【([^】]+)】\s*[:：]/) || line.match(/【([^】]+)】\s*[:：]/);
-    if (match) {
-      const capturedNameWithTitle = match[1].trim();
-      // 提取核心名字，例如从 "董事长 (董事长)" 中提取 "董事长"
-      const coreName = capturedNameWithTitle.split(/[\s(（]/)[0].trim();
-      const myCoreName = (expertName || "").split(/[\s(（]/)[0].trim();
-
-      // 如果这个前缀不是本专家自己，则断定为幻觉多角色脑补，立即切断！
-      if (coreName && coreName !== myCoreName && coreName !== "你" && coreName !== "me") {
-        // 我们在这一行的起始位置切断
-        cutIndex = charCounter;
-        break;
-      }
-    }
-    // 加 1 是因为 split("\n") 丢掉了换行符的长度
-    charCounter += line.length + 1;
-  }
-
-  if (cutIndex !== -1) {
-    text = text.substring(0, cutIndex).trim();
-  }
-
-  // 3. 定位核心 JSON 块
-  // 关键字集合（立场卡片特有键）
-  const keywords = ["stance", "concern", "recommendation", "tradeoff"];
-  let lastKeywordPos = -1;
-
-  for (const kw of keywords) {
-    // 兼容可能的大写或单双引号
-    const doubleQuotePos = text.lastIndexOf(`"${kw}"`);
-    const singleQuotePos = text.lastIndexOf(`'${kw}'`);
-    const pos = Math.max(doubleQuotePos, singleQuotePos);
-    if (pos > lastKeywordPos) {
-      lastKeywordPos = pos;
-    }
-  }
-
+  // 3. 先定位并提取核心 JSON 块
   let jsonStartIdx = -1;
-  if (lastKeywordPos !== -1) {
-    // 从该关键字倒序查找最近的 '{'
-    jsonStartIdx = text.lastIndexOf("{", lastKeywordPos);
+  let searchPos = text.length;
+
+  while (true) {
+    if (searchPos <= 0) break;
+    const braceIdx = text.lastIndexOf("{", searchPos - 1);
+    if (braceIdx === -1) break;
+
+    const tailText = text.substring(braceIdx);
+    // 检测该 `{` 后面是否包含立场卡片这四个特征关键字中的任意一个
+    const hasKeywords = /stance|concern|recommendation|tradeoff/i.test(tailText);
+    // 同时检测该 `{` 后面是否属于典型的 JSON 起头模式（大括号后面跟着空格/引号/字符等）
+    const isJsonPattern = /^\{\s*["'\w\s]/i.test(tailText);
+
+    if (hasKeywords && isJsonPattern) {
+      jsonStartIdx = braceIdx;
+      break;
+    }
+
+    searchPos = braceIdx; // 继续往前寻找上一个大括号
   }
 
   let jsonString = "";
@@ -176,33 +159,8 @@ export function extractAndCleanJson(rawText: string, expertName: string): {
         jsonOriginalBlock = text.substring(prefixText.length - prefixMatch[0].length);
       }
 
-      // 执行闭合自适应补齐算法：
-      let repairStr = text.substring(jsonStartIdx).trim();
-
-      // A. 引号补齐：如果在最后一个双引号后，跟着拼写未完成的文本，且有奇数个双引号
-      let quoteCount = 0;
-      for (let j = 0; j < repairStr.length; j++) {
-        if (repairStr[j] === '"' && (j === 0 || repairStr[j - 1] !== '\\')) {
-          quoteCount++;
-        }
-      }
-      if (quoteCount % 2 !== 0) {
-        repairStr += '"'; // 补上未闭合的右侧引号
-      }
-
-      // B. 大括号补全
-      let openBraces = 0;
-      for (const char of repairStr) {
-        if (char === "{") openBraces++;
-        if (char === "}") {
-          openBraces--;
-        }
-      }
-      for (let k = 0; k < openBraces; k++) {
-        repairStr += "}";
-      }
-
-      jsonString = repairStr;
+      // 调用状态机物理修复机制进行高鲁棒自愈：
+      jsonString = repairJson(text.substring(jsonStartIdx));
     }
   }
 
@@ -213,13 +171,13 @@ export function extractAndCleanJson(rawText: string, expertName: string): {
   let tradeoff = "暂无取舍摘要";
 
   if (jsonString) {
-    try {
-      const parsed = JSON.parse(jsonString);
+    const parsed = cleanAndParseJson<any>(jsonString);
+    if (parsed) {
       stance = parsed.stance || stance;
       concern = parsed.concern || concern;
       recommendation = parsed.recommendation || recommendation;
       tradeoff = parsed.tradeoff || tradeoff;
-    } catch (e) {
+    } else {
       // JSON 解析失败时的正则强力提取 (针对格式破损或半截字段)
       const matchField = (field: string) => {
         // 标准格式："field" : "value"
@@ -246,6 +204,69 @@ export function extractAndCleanJson(rawText: string, expertName: string): {
     }
   }
 
+  // 2. 后进行：动态剧本角色串扰截断 (Crosstalk Truncation)
+  // 如果文本中包含 \n【角色名】 或 【角色名】，且角色名与本专家不同，说明大模型脑补了剧本续写。
+  // 我们检测：在新起一行出现 【xxx】 且 xxx !== expertName 的情况。
+  const lines = text.split("\n");
+  let cutIndex = -1;
+  let charCounter = 0;
+  let modified = false;
+  let hasEnteredMyTurn = hasStrippedSelfPrefix;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // 匹配类似: 【董事长】： 或 【董事长 (董事长)】： 或 【主持人】：
+    const match = line.match(/^【([^】]+)】\s*[:：]/) || line.match(/【([^】]+)】\s*[:：]/);
+    if (match) {
+      const capturedNameWithTitle = match[1].trim();
+      // 提取核心名字，例如从 "董事长 (董事长)" 中提取 "董事长"
+      const coreName = capturedNameWithTitle.split(/[\s(（]/)[0].trim();
+      const myCoreName = (expertName || "").split(/[\s(（]/)[0].trim();
+
+      // 增强判定：如果捕获的名称中包含了当前专家的核心名字，或者当前专家的核心名字包含了捕获的名称，我们就认为它是本专家，不属于角色串扰
+      const isSelf = 
+        coreName === myCoreName || 
+        capturedNameWithTitle.includes(myCoreName) || 
+        myCoreName.includes(coreName);
+
+      if (isSelf) {
+        hasEnteredMyTurn = true;
+      } else if (coreName && coreName !== "你" && coreName !== "me") {
+        // 如果是其他角色的假前缀
+        // 安全防线：如果还没有进入本专家的发言区且在前100个字符内，我们仅擦除该假角色前缀，而不执行整篇完全截断
+        if (!hasEnteredMyTurn && charCounter < 100) {
+          lines[i] = line.replace(match[0], "").trim();
+          modified = true;
+          hasEnteredMyTurn = true; // 擦除前导假前缀后，后续应视为已进入正文区
+        } else {
+          // 后置假前缀，在这一行的起始位置切断
+          cutIndex = charCounter;
+          break;
+        }
+      }
+    } else {
+      // 如果没有匹配到前缀，且该行有实质内容（长度大于10），可视为进入正文发言区
+      if (line.trim().length > 10) {
+        hasEnteredMyTurn = true;
+      }
+    }
+    // 加 1 是因为 split("\n") 丢掉了换行符的长度
+    charCounter += line.length + 1;
+  }
+
+  if (cutIndex !== -1) {
+    let currentLen = 0;
+    const cutLines: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (currentLen >= cutIndex) break;
+      cutLines.push(lines[i]);
+      currentLen += lines[i].length + 1;
+    }
+    text = cutLines.join("\n").trim();
+  } else if (modified) {
+    text = lines.join("\n").trim();
+  }
+
   // 5. 额外清理残留的代码块标记 (```json 等) 及空白符号，自动剥离任何首尾多余的代码块套壳符号防止未闭合渲染故障
   text = text
     .replace(/^```[a-zA-Z]*\s*/, "") // 清理开头的 ```json 等
@@ -262,6 +283,7 @@ export function extractAndCleanJson(rawText: string, expertName: string): {
     content: finalContent,
     expertStance: { stance, concern, recommendation, tradeoff }
   };
+
 }
 
 /**
@@ -275,9 +297,22 @@ export function cleanStreamingJson(text: string): string {
   const idxBackticks = text.lastIndexOf("```");
 
   let idxBrace = -1;
-  const braceMatches = [...text.matchAll(/[\s\n]\{/g)];
-  if (braceMatches.length > 0) {
-    idxBrace = braceMatches[braceMatches.length - 1].index!;
+  let searchPos = text.length;
+
+  while (true) {
+    if (searchPos <= 0) break;
+    const braceIdx = text.lastIndexOf("{", searchPos - 1);
+    if (braceIdx === -1) break;
+
+    const tailText = text.substring(braceIdx);
+    const hasKeywords = /stance|concern|recommendation|tradeoff/i.test(tailText);
+    const isJsonPattern = /^\{\s*["'\w\s]/i.test(tailText);
+
+    if (hasKeywords && isJsonPattern) {
+      idxBrace = braceIdx;
+      break;
+    }
+    searchPos = braceIdx;
   }
 
   let startIdx = -1;
@@ -304,4 +339,285 @@ export function cleanStreamingJson(text: string): string {
   }
 
   return text;
+}
+
+/**
+ * 编译器词法状态机级别的 JSON 物理修复器（自愈机制）
+ * 1. 精准遍历单/双引号以跳过字符串内容，防止字符串内字符混淆结构
+ * 2. 对截断未闭合的双引号字符串自动补充右引号
+ * 3. 自动修补冒号 ":" 后面缺失的空值，以及多余的末尾逗号 ","
+ * 4. 采用后进先出栈（Stack）机制，100% 确定性地闭合未结束的大括号和中括号
+ */
+export function repairJson(jsonStr: string): string {
+  let s = jsonStr.trim();
+  if (!s) return "{}";
+
+  let inString = false;
+  let isEscaped = false;
+  const stack: ("{" | "[")[] = [];
+  const chars = s.split("");
+
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i];
+
+    if (inString) {
+      if (char === "\\") {
+        isEscaped = !isEscaped;
+      } else if (char === '"' && !isEscaped) {
+        inString = false;
+      } else {
+        isEscaped = false;
+      }
+    } else {
+      if (char === '"') {
+        inString = true;
+        isEscaped = false;
+      } else if (char === "{") {
+        stack.push("{");
+      } else if (char === "[") {
+        stack.push("[");
+      } else if (char === "}") {
+        if (stack[stack.length - 1] === "[") {
+          // 自动纠正：在大括号 } 闭合处如果是数组，说明模型把 ] 错写成了 }。
+          // 将其纠正为 ]，并弹出栈顶中括号。
+          chars[i] = "]";
+          stack.pop();
+        } else if (stack[stack.length - 1] === "{") {
+          stack.pop();
+        }
+      } else if (char === "]") {
+        if (stack[stack.length - 1] === "[") {
+          stack.pop();
+        }
+      }
+    }
+  }
+
+  let repaired = chars.join("");
+
+  // 转义截断修复
+  if (inString && isEscaped) {
+    repaired = repaired.slice(0, -1);
+  }
+
+  // 双引号闭合
+  if (inString) {
+    repaired += '"';
+  }
+
+  // 修复非法字段结尾
+  const trimmed = repaired.trim();
+  if (trimmed.endsWith(":")) {
+    repaired += ' ""';
+  } else if (trimmed.endsWith(",")) {
+    repaired = repaired.slice(0, repaired.lastIndexOf(","));
+  }
+
+  // 括号倒序出栈补齐
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const brace = stack[i];
+    if (brace === "{") repaired += "}";
+    if (brace === "[") repaired += "]";
+  }
+
+  return repaired;
+}
+
+/**
+ * 编译器级别状态机：转义 JSON 双引号字符串值内部的真实控制字符（如实际换行符、制表符）
+ * 从而彻底防范 JSON.parse 抛出 "Bad control character in string literal" 的致命错误
+ */
+export function sanitizeJsonString(rawJson: string): string {
+  let result = "";
+  let inString = false;
+  let isEscaped = false;
+
+  for (let i = 0; i < rawJson.length; i++) {
+    const char = rawJson[i];
+
+    if (inString) {
+      if (char === "\\") {
+        isEscaped = !isEscaped;
+        result += char;
+      } else if (char === '"' && !isEscaped) {
+        inString = false;
+        result += char;
+      } else {
+        isEscaped = false;
+        // 如果在大括号字符串字面量内部，遇到实际的控制字符，将其转义为标准 JSON 字符
+        if (char === "\n") {
+          result += "\\n";
+        } else if (char === "\r") {
+          result += "\\r";
+        } else if (char === "\t") {
+          result += "\\t";
+        } else {
+          result += char;
+        }
+      }
+    } else {
+      if (char === '"') {
+        inString = true;
+        isEscaped = false;
+      }
+      result += char;
+    }
+  }
+  return result;
+}
+
+/**
+ * 稳健解析破损或带有 LaTeX、非标准转义、非法控制字符的 JSON 字符串
+ */
+export function cleanAndParseJson<T>(jsonStr: string): T | null {
+  if (!jsonStr) return null;
+  try {
+    // 1. 转义控制字符 (防止 Bad control character)
+    const sanitized = sanitizeJsonString(jsonStr);
+    // 2. 解决 LaTeX 公式中单反斜杠被误作非法转义字符的缺陷
+    const doubleSlashed = sanitized.replace(/\\(?!["\\\/n]|u[0-9a-fA-F]{4})/g, "\\\\");
+    // 3. 解析
+    return JSON.parse(doubleSlashed) as T;
+  } catch (e) {
+    // 4. 解析失败时尝试用 repairJson 自愈闭合再解析一次
+    try {
+      const repaired = repairJson(jsonStr);
+      const sanitizedRep = sanitizeJsonString(repaired);
+      const doubleSlashedRep = sanitizedRep.replace(/\\(?!["\\\/n]|u[0-9a-fA-F]{4})/g, "\\\\");
+      return JSON.parse(doubleSlashedRep) as T;
+    } catch (innerErr) {
+      return null;
+    }
+  }
+}
+
+/**
+ * 智能序号与分号列表折行美化器 (List Beautifier)
+ * 针对大模型在 JSON 字段中连续写出的序号或分号列表，智能在序列前插入换行符，以便 Markdown 正确折行展示
+ */
+export function beautifyListFormatting(text: string): string {
+  if (!text) return "";
+  
+  // 1. 针对分号或句号后面，紧跟数字点序号或中文序号的情况，追加换行
+  // 例如：'1. xx； 2. xx' -> '1. xx；\n2. xx'
+  let formatted = text.replace(/([;；。])\s*(?=\d+[\.、]|[一二三四五六七八九十]+[、\.])/g, "$1\n");
+  
+  // 2. 针对首行没有换行，且以数字序号分隔且前置有较长文本的情况，做智能切分
+  // 比如 "我的建议是：1. 兼容性测试 2. 执行热替换"
+  // 我们检测：数字序号前为普通字词（非空格或标点），在此处插入换行
+  formatted = formatted.replace(/(?<=[^\s\d;；。，,])\s+(?=\d+[\.、]|[一二三四五六七八九十]+[、\.])/g, "\n");
+  
+  return formatted;
+}
+
+/**
+ * 稳健的“末位检索与自适应截断”提取算法，只抓取最后一个真正的 <inquiry> 提问包裹块，
+ * 彻底隔离大模型在前面为了构思而说出的英文废话或 <inquiry> 单词泄露。
+ */
+export function extractInquiryPrompt(text: string): string {
+  if (!text) return "";
+  const lastInquiryIdx = text.lastIndexOf("<inquiry>");
+  if (lastInquiryIdx === -1) return "";
+  
+  let content = text.substring(lastInquiryIdx + 9); // "<inquiry>".length === 9
+  const closeIdx = content.indexOf("</inquiry>");
+  if (closeIdx !== -1) {
+    content = content.substring(0, closeIdx);
+  }
+  return content.trim();
+}
+
+/**
+ * 极其稳健的通用流式残损 JSON 属性值提取器
+ * 支持在流式输出（JSON 尚未闭合且残缺）时，实时提取指定 Key 的 String 值，并自动还原转义字符。
+ * 
+ * @param text 正在吐流的原始文本（残缺 JSON）
+ * @param key 需要提取的属性键名（例如 "summary" 或 "stance"）
+ */
+export function extractStreamingJsonKey(text: string, key: string): string {
+  if (!text) return "";
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) {
+    return text; // 退化情况：非 JSON 结构直接透传
+  }
+
+  // 动态构造匹配键的正则，支持单/双引号及空格：如 "summary"\s*:\s*"
+  const keyPattern = new RegExp(`["']${key}["']\\s*:\\s*["']`);
+  const match = trimmed.match(keyPattern);
+  if (!match) return "";
+
+  const startIdx = (match.index ?? 0) + match[0].length;
+  let endIdx = -1;
+  let escape = false;
+
+  // 扫描寻找该属性值字符串的结束双引号（排除转义引号）
+  for (let i = startIdx; i < trimmed.length; i++) {
+    const char = trimmed[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      endIdx = i;
+      break;
+    }
+  }
+
+  let rawValue = "";
+  if (endIdx !== -1) {
+    rawValue = trimmed.substring(startIdx, endIdx);
+  } else {
+    rawValue = trimmed.substring(startIdx);
+    if (rawValue.endsWith("\\")) {
+      rawValue = rawValue.slice(0, -1); // 保护正在吐出中的转义斜杠
+    }
+  }
+
+  // 还原转义字符，保证 Markdown 换行及符号正常渲染
+  return rawValue
+    .replace(/\\n/g, "\n")
+    .replace(/\\"/g, '"')
+    .replace(/\\t/g, "\t")
+    .replace(/\\\\/g, "\\");
+}
+
+/**
+ * 判断正在吐流的残破 JSON 文本中，指定 key 的字符串值是否已经输出完毕并成功闭合。
+ * 
+ * @param text 正在吐流的原始文本（残损 JSON）
+ * @param key 属性键名
+ */
+export function isStreamingJsonKeyClosed(text: string, key: string): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) {
+    return false;
+  }
+
+  const keyPattern = new RegExp(`["']${key}["']\\s*:\\s*["']`);
+  const match = trimmed.match(keyPattern);
+  if (!match) return false;
+
+  const startIdx = (match.index ?? 0) + match[0].length;
+  let escape = false;
+
+  for (let i = startIdx; i < trimmed.length; i++) {
+    const char = trimmed[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      return true; // 找到了闭合的引号，说明该 key 已经读取完毕了
+    }
+  }
+  return false;
 }
