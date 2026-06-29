@@ -597,10 +597,44 @@ export interface ModeratorSummary {
 }
 
 /**
+ * 主持人角色前缀物理清洗器
+ * 剥离大模型在主持人总结中自动添加的 【主持人】：、主持人：、【{name}】：等前缀自称
+ */
+export function stripModeratorPrefix(text: string, moderatorName?: string, moderatorTitle?: string): string {
+  if (!text) return "";
+  
+  // 性能优化：主持人前缀只可能出现在最开头。限制只在前 200 个字符内匹配，避免对超长累加流文本进行全量正则匹配导致 CPU 爆满
+  const limit = 200;
+  const head = text.substring(0, limit);
+  const tail = text.substring(limit);
+  
+  // 构建需要匹配的身份标识词列表（主持人 + 动态名称 + 头衔）
+  const identityTokens = ["主持人", "主持"];
+  if (moderatorName && !identityTokens.includes(moderatorName)) {
+    identityTokens.push(moderatorName);
+  }
+  if (moderatorTitle && !identityTokens.includes(moderatorTitle)) {
+    identityTokens.push(moderatorTitle);
+  }
+  
+  const escaped = identityTokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const identityAlt = escaped.join("|");
+  
+  // 匹配开头的角色前缀并剥离，如：【主持人】：、【平衡主持人】：、主持人：、主持人发言如下：
+  const prefixPattern = new RegExp(
+    `^[\\s\\n]*(?:【[^】]*(?:${identityAlt})[^】]*】|(?:${identityAlt}))[^：:\\n]{0,20}[：:][\\s\\n]*`,
+    "i"
+  );
+  
+  const cleanedHead = head.replace(prefixPattern, "");
+  return (cleanedHead + tail).trim();
+}
+
+/**
  * 针对主持人流式/非流式输出的正文进行提取
  * 格式与专家的 extractAndCleanJson 对齐，分离主 Markdown 文本与尾部包裹在 ```json 中的纪要
  */
-export function extractAndCleanModeratorJson(rawText: string): {
+export function extractAndCleanModeratorJson(rawText: string, moderatorName?: string, moderatorTitle?: string): {
   content: string;
   moderatorSummary: ModeratorSummary;
 } {
@@ -614,6 +648,9 @@ export function extractAndCleanModeratorJson(rawText: string): {
     text = text.split(thinkBlock).join("");
   }
   text = text.trim();
+
+  // 剥离主持人自称前缀（如 【主持人】：、平衡主持人：等）
+  text = stripModeratorPrefix(text, moderatorName, moderatorTitle);
 
   // 定位最后的 JSON 块
   let jsonStartIdx = -1;

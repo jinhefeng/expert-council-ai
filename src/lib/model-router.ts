@@ -638,7 +638,7 @@ export async function getSynthesis({
   });
 
   try {
-    const parsedRes = extractAndCleanModeratorJson(responseText);
+    const parsedRes = extractAndCleanModeratorJson(responseText, moderatorName, moderatorTitle);
     return {
       summary: parsedRes.content,
       consensus: parsedRes.moderatorSummary.consensus,
