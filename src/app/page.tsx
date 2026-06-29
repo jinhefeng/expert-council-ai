@@ -241,6 +241,14 @@ export default function Home() {
   const prevMeetingIdRef = useRef<string | null>(null);
   const isAutoScrollEnabled = useRef<boolean>(true);
 
+  const scrollToConclusion = (behavior: ScrollBehavior = "smooth") => {
+    const conclusionEl = document.getElementById("conclusion-panel");
+    if (conclusionEl) {
+      conclusionEl.scrollIntoView({ behavior, block: "start" });
+      isAutoScrollEnabled.current = false;
+    }
+  };
+
   const meetingsRef = useRef<Meeting[]>([]);
   const lastScrollTimeRef = useRef<number>(0);
   useEffect(() => {
@@ -665,10 +673,8 @@ export default function Home() {
             const { scrollTop, scrollHeight, clientHeight } = thread;
             isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 150;
           } else {
-            const conclusionEl = document.getElementById("conclusion-panel");
-            if (activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && conclusionEl) {
-              conclusionEl.scrollIntoView({ behavior: "auto" });
-              isAutoScrollEnabled.current = false;
+            if (activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId]) {
+              scrollToConclusion("auto");
             } else {
               chatEndRef.current?.scrollIntoView({ behavior: "auto" });
               isAutoScrollEnabled.current = true;
@@ -2335,9 +2341,7 @@ export default function Home() {
       setUnlockedComposers(prev => ({ ...prev, [targetMeetingId]: false }));
       
       setTimeout(() => {
-        if (chatThreadRef.current) {
-          chatThreadRef.current.scrollTop = chatThreadRef.current.scrollHeight;
-        }
+        scrollToConclusion("smooth");
       }, 100);
     } catch (e: any) {
       if (e.name !== "AbortError" && !signal.aborted) {
