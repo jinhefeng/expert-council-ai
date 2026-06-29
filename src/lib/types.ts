@@ -49,6 +49,7 @@ export type LLMEngineConfig = TenantScoped & {
   isActive: boolean;
   isReasoningModel?: boolean;
   enableStreaming?: boolean;
+  isSystem?: boolean; // 系统内置只读引擎标识
 };
 
 export type Meeting = TenantScoped & {

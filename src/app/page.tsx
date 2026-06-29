@@ -959,7 +959,7 @@ export default function Home() {
       alert("没有可导出的自定义模型配置。");
       return;
     }
-    const exportData = JSON.stringify(engineConfigs, null, 2);
+    const exportData = JSON.stringify(engineConfigs.filter(c => !c.isSystem), null, 2);
     // 采用 navigator.clipboard 以及 fallback 到 prompt
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(exportData).then(() => {
@@ -984,6 +984,10 @@ export default function Home() {
 
       for (const item of arr) {
         if (item.id && item.name && item.provider && item.baseUrl && item.apiKey && item.model) {
+          // 防御：禁止导入系统预设只读大模型
+          if (item.isSystem || item.id.startsWith("system-")) {
+            continue;
+          }
           const existingIdx = newConfigs.findIndex(c => c.id === item.id);
           if (existingIdx >= 0) {
             newConfigs[existingIdx] = { ...newConfigs[existingIdx], ...item };

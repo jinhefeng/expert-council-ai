@@ -385,6 +385,10 @@ export default function AdminPage() {
     try {
       const item = JSON.parse(importDraft);
       if (item.id && item.name && item.provider && item.baseUrl && item.apiKey && item.model) {
+        if (item.isSystem || item.id.startsWith("system-")) {
+          alert("禁止导入或覆盖系统内置只读模型配置。");
+          return;
+        }
         let newConfigs = [...engineConfigs];
         const existingIdx = newConfigs.findIndex(c => c.id === item.id);
         if (existingIdx >= 0) {
@@ -410,7 +414,7 @@ export default function AdminPage() {
     const fullConfig = {
       version: "1.0",
       type: "agent-council-ai-full-config",
-      engineConfigs,
+      engineConfigs: engineConfigs.filter(c => !c.isSystem),
       systemOverrides,
       customExperts,
       userProfile,
@@ -438,7 +442,10 @@ export default function AdminPage() {
       }
       
       // 执行反序列化并保存
-      if (data.engineConfigs) await storage.saveEngineConfigs(TENANT_ID, data.engineConfigs);
+      if (data.engineConfigs) {
+        const customConfigs = data.engineConfigs.filter((c: any) => !c.isSystem && !(c.id && c.id.startsWith("system-")));
+        await storage.saveEngineConfigs(TENANT_ID, customConfigs);
+      }
       if (data.systemOverrides) await storage.saveSystemExpertsOverrides(TENANT_ID, data.systemOverrides);
       if (data.customExperts && Array.isArray(data.customExperts)) {
         for (const expert of data.customExperts) {
