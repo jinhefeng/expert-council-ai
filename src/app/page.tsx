@@ -1579,6 +1579,7 @@ export default function Home() {
         currentMeeting = { ...currentMeeting, messages: nextMsgs };
         setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
 
+        const synthStartTime = Date.now();
         const synth = await requestSynthesis(
           currentMeeting, 
           userQuestion, 
@@ -1604,11 +1605,14 @@ export default function Home() {
           }
         );
         
+        const synthDuration = parseFloat(((Date.now() - synthStartTime) / 1000).toFixed(1));
+        
         // 流式读取完成，大模型开始 done。为了给用户提供提炼 Loading 的平滑过渡视觉，我们先保持 Loading 状态
         modMessage = {
           ...modMessage,
           content: synth.summary,
           isStanceExtracting: true,
+          duration: synthDuration,
         };
         setMeetings((prev) =>
           prev.map((m) => {
@@ -1630,6 +1634,7 @@ export default function Home() {
               nextActions: synth.nextActions || [],
             },
             isStanceExtracting: false, // 提炼结束，展示卡片
+            duration: synthDuration,
           };
 
           const finalMessages = currentMeeting.messages.map(msg => msg.id === modMessageId ? modMessage : msg);
@@ -1808,10 +1813,11 @@ export default function Home() {
           let finalTurnContent = "";
           let finalExpertStance = undefined;
 
+          const expertTurnStartTime = Date.now();
           try {
             let guidedQuestion = activeQuestion;
             if (discussionDecisions.length > 0) {
-              guidedQuestion = `【此前评审已达成的决议与共识】：\n${discussionDecisions.map((d, i) => `${i + 1}. ${d}`).join("\n")}\n\n【本轮针对性研讨议题】：${activeQuestion}`;
+              guidedQuestion = `【此前评审已达成决议与共识】：\n${discussionDecisions.map((d, i) => `${i + 1}. ${d}`).join("\n")}\n\n【本轮针对性研讨议题】：${activeQuestion}`;
             }
 
             const turnResult = await requestExpertTurn(
@@ -1855,6 +1861,7 @@ export default function Home() {
             ...expertMessage,
             content: finalTurnContent,
             expertStance: finalExpertStance,
+            duration: parseFloat(((Date.now() - expertTurnStartTime) / 1000).toFixed(1)),
           };
 
           nextMsgs = currentMeeting.messages.map(msg => 
@@ -1896,6 +1903,7 @@ export default function Home() {
         currentMeeting = { ...currentMeeting, messages: nextMsgs };
         setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
 
+        const synthStartTime = Date.now();
         const synth = await requestSynthesis(
           currentMeeting,
           activeQuestion,
@@ -1921,11 +1929,14 @@ export default function Home() {
           }
         );
 
+        const synthDuration = parseFloat(((Date.now() - synthStartTime) / 1000).toFixed(1));
+
         // 流式读取完成，大模型开始 done。为了给用户提供提炼 Loading 的平滑过渡视觉，我们先保持 Loading 状态
         modMessage = {
           ...modMessage,
           content: synth.summary,
           isStanceExtracting: true,
+          duration: synthDuration,
         };
         setMeetings((prev) =>
           prev.map((m) => {
@@ -1947,6 +1958,7 @@ export default function Home() {
               nextActions: synth.nextActions || [],
             },
             isStanceExtracting: false, // 提炼结束，展示卡片
+            duration: synthDuration,
           };
 
           if (synth.decisions && Array.isArray(synth.decisions)) {

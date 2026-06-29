@@ -92,6 +92,7 @@ export type ChatMessage = TenantScoped & {
   };
   sources?: SourceItem[];
   createdAt: number;
+  duration?: number; // 发言/总结生成耗时 (秒)
 };
 
 export type SourceItem = {
