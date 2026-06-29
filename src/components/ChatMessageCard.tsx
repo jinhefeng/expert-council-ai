@@ -5,7 +5,8 @@ import remarkBreaks from "remark-breaks";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { ChatMessage, Expert, SystemPromptsConfig } from "@/lib/types";
-import { beautifyListFormatting, extractStreamingJsonKey, isStreamingJsonKeyClosed } from "@/lib/content-parser";
+import { beautifyListFormatting, parseThinkingContent } from "@/lib/content-parser";
+import { ThinkingBlock } from "./ThinkingBlock";
 import "katex/dist/katex.min.css";
 
 const SYSTEM_LOADERS = {
@@ -133,6 +134,7 @@ interface ChatMessageCardProps {
   allExperts: Expert[];
   speakingExpertId: string | null;
   isSynthesisPending: boolean;
+  activeTurnDuration?: number;
   // 编辑操作
   editingMessageId: string | null;
   editingContent: string;
@@ -156,6 +158,7 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
   allExperts,
   speakingExpertId,
   isSynthesisPending,
+  activeTurnDuration,
   editingMessageId,
   editingContent,
   setEditingMessageId,
@@ -170,22 +173,10 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
     displayContent = "";
   }
 
-  let thinkingContent = "";
-  let isThinkingDone = false;
-  const thinkMatch = displayContent.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
-  
-  if (thinkMatch) {
-    thinkingContent = thinkMatch[1].trim();
-    isThinkingDone = safeContent.includes("</think>");
-    displayContent = displayContent.replace(thinkMatch[0], "").trim();
-  } else {
-    isThinkingDone = true;
-  }
+  const { thinkingContent, displayContent: cleanedDisplayContent, isThinkingDone } = parseThinkingContent(displayContent);
+  displayContent = cleanedDisplayContent;
 
-  // 针对 AI 主持人总结消息进行流式提取 summary 正文，避免在流式期间将残损的 JSON 裸露渲染
-  if (isMod && message.senderName !== "系统提示" && message.senderName !== "系统") {
-    displayContent = extractStreamingJsonKey(displayContent, "summary");
-  }
+
 
   // 计算专家或者主持人首字就绪前的 Loading 状态
   const isExpertTTFB = isExp && speakingExpertId === message.senderId && safeContent.length === 0;
@@ -204,144 +195,206 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
     )
   );
 
-  const shouldShowModSummaryLoading =
+  const shouldShowModSummaryLoading = !!(
     isMod &&
     !message.moderatorSummary &&
-    isStreamingJsonKeyClosed(safeContent, "summary") &&
+    message.isStanceExtracting &&
     displayContent.length > 0 &&
     safeContent !== "__TIMEOUT__" &&
     safeContent !== "__ERROR__" &&
     message.senderName !== "系统提示" &&
-    message.senderName !== "系统";
+    message.senderName !== "系统"
+  );
+
+  const formattedTime = React.useMemo(() => {
+    if (!message.createdAt) return "";
+    const date = new Date(message.createdAt);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }, [message.createdAt]);
 
   return (
     <article className={`chat-message ${message.role}`}>
       <div className="message-avatar">
         {isUser ? "你" : isMod ? "主持" : message.senderName.slice(0, 2)}
       </div>
-      <div className="message-body">
+      <div className="message-body" style={{ display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start", width: "100%" }}>
         {(() => {
-          return (
-            <>
-              {(isExp || isMod || isUser) && (
-                <div style={{ 
-                  display: "flex", 
-                  alignItems: "flex-start", 
-                  gap: "12px", 
-                  marginBottom: "4px",
-                  justifyContent: isUser ? "flex-end" : "flex-start"
-                }}>
-                  <span style={{ 
-                    fontSize: "11px", 
-                    color: "var(--muted)", 
-                    marginTop: "2px",
-                    flexShrink: 0
-                  }}>
-                    {(() => {
-                      if (isUser) {
-                        return <span>{userProfile.name} · {userProfile.title}</span>;
-                      }
-                      const isPseudoMod = isExp && (message.senderName === "主持人" || message.senderId === "moderator");
-                      if (isMod || isPseudoMod) {
-                        if (message.senderName === "系统提示" || message.senderName === "系统") {
-                          return <span>{message.senderName}</span>;
-                        }
-                        const name = systemPrompts?.moderatorName || message.senderName || "主持人";
-                        const title = systemPrompts?.moderatorTitle || message.senderTitle || "决策协调官";
-                        return <span>{name} · {title}</span>;
-                      }
-                      if (isExp) {
-                        const curExp = allExperts.find((e: any) => e.id === message.senderId);
-                        const isExt = curExp?.isExternalAgent;
-                        const name = curExp?.name || message.senderName;
-                        const title = curExp?.title || message.senderTitle || "总监";
-                        return (
-                          <span style={{ display: "inline-flex", alignItems: "center" }}>
-                            {name} · {title}
-                            {isExt && (
-                              <span style={{ 
-                                fontSize: "10px", 
-                                color: "var(--muted)", 
-                                padding: "1.5px 5px", 
-                                border: "1px solid var(--line)", 
-                                borderRadius: "4px", 
-                                fontWeight: "normal",
-                                display: "inline-block",
-                                marginLeft: "6px",
-                                lineHeight: 1
-                              }}>
-                                小龙虾
-                              </span>
-                            )}
-                          </span>
-                        );
-                      }
-                      return <span>{message.senderName || ""}</span>;
-                    })()}
-                  </span>
-                  
-                  {thinkingContent && isThinkingDone && (
-                    <details style={{ flex: 1, textAlign: isUser ? "right" : "left" }}>
-                      <summary style={{ 
-                        fontSize: "11px", color: "var(--muted)", cursor: "pointer", userSelect: "none", 
-                        fontWeight: "500", display: "inline-block",
-                        background: "var(--surface-strong)", padding: "2px 8px", borderRadius: "999px",
-                        border: "1px solid var(--line)"
-                      }}>
-                        深度思考已折叠
-                      </summary>
-                      <div style={{ 
-                        fontSize: "13px", color: "var(--muted)", whiteSpace: "pre-wrap", 
-                        fontStyle: "italic", marginTop: "8px", padding: "10px 14px", 
-                        background: "rgba(0,0,0,0.02)", border: "1px dashed var(--line)", 
-                        borderRadius: "6px", textAlign: "left"
-                      }}>
-                        {thinkingContent}
-                      </div>
-                    </details>
-                  )}
+          if (editingMessageId === message.id) {
+            return (
+              <div className="edit-message-container" style={{ marginTop: "4px", width: "100%", display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start" }}>
+                <textarea
+                  value={editingContent}
+                  onChange={(e) => setEditingContent(e.target.value)}
+                  autoFocus
+                  style={{
+                    width: "100%", maxWidth: "600px", minHeight: "80px", padding: "12px", borderRadius: "12px",
+                    border: "1px solid var(--line)", background: "var(--surface)",
+                    fontSize: "14px", fontFamily: "inherit", resize: "vertical",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.05)", outline: "none"
+                  }}
+                />
+                <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+                  <button
+                    onClick={() => setEditingMessageId(null)}
+                    style={{ padding: "6px 14px", borderRadius: "6px", border: "1px solid var(--line)", background: "var(--surface)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingMessageId(null);
+                      handleSubmitDiscussion(undefined, {
+                        targetMeetingId: activeMeetingId,
+                        userQuestion: editingContent,
+                        messageId: message.id,
+                        baseHistory: [], // 大循环内部重新寻找 slice 历史，外层传入空数组做占位
+                        baseSources: message.sources || []
+                      });
+                    }}
+                    style={{ padding: "6px 14px", borderRadius: "6px", border: "none", background: "var(--ink)", color: "var(--surface)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}
+                  >
+                    保存并重新生成
+                  </button>
                 </div>
+              </div>
+            );
+          }
+
+          return (
+            <div className="message-hover-wrapper" style={{ 
+              display: "flex", 
+              alignItems: "flex-end", 
+              justifyContent: isUser ? "flex-end" : "flex-start", 
+              gap: "8px", 
+              width: "100%" 
+            }}>
+              {isUser && !isSessionActive && displayContent && (
+                <button
+                  className="message-edit-btn"
+                  onClick={() => {
+                    setEditingMessageId(message.id);
+                    setEditingContent(message.content);
+                  }}
+                  title="重新编辑"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                  </svg>
+                </button>
               )}
 
-              {editingMessageId === message.id ? (
-                <div className="edit-message-container" style={{ marginTop: "4px", width: "100%", display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start" }}>
-                  <textarea
-                    value={editingContent}
-                    onChange={(e) => setEditingContent(e.target.value)}
-                    autoFocus
-                    style={{
-                      width: "100%", maxWidth: "600px", minHeight: "80px", padding: "12px", borderRadius: "12px",
-                      border: "1px solid var(--line)", background: "var(--surface)",
-                      fontSize: "14px", fontFamily: "inherit", resize: "vertical",
-                      boxShadow: "0 2px 8px rgba(0,0,0,0.05)", outline: "none"
-                    }}
-                  />
-                  <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
-                    <button
-                      onClick={() => setEditingMessageId(null)}
-                      style={{ padding: "6px 14px", borderRadius: "6px", border: "1px solid var(--line)", background: "var(--surface)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}
-                    >
-                      取消
-                    </button>
-                    <button
-                      onClick={() => {
-                        setEditingMessageId(null);
-                        handleSubmitDiscussion(undefined, {
-                          targetMeetingId: activeMeetingId,
-                          userQuestion: editingContent,
-                          messageId: message.id,
-                          baseHistory: [], // 大循环内部重新寻找 slice 历史，外层传入空数组做占位
-                          baseSources: message.sources || []
-                        });
-                      }}
-                      style={{ padding: "6px 14px", borderRadius: "6px", border: "none", background: "var(--ink)", color: "var(--surface)", cursor: "pointer", fontSize: "13px", fontWeight: 500 }}
-                    >
-                      保存并重新生成
-                    </button>
+              <div style={{ 
+                display: "flex", 
+                flexDirection: "column", 
+                width: "fit-content", 
+                maxWidth: "100%", 
+                alignItems: isUser ? "flex-end" : "flex-start"
+              }}>
+                {(isExp || isMod || isUser) && (
+                  <div style={{ 
+                    display: "flex", 
+                    alignItems: "center", 
+                    justifyContent: "space-between", 
+                    gap: "16px", 
+                    marginBottom: "6px",
+                    width: "100%",
+                    flexDirection: isUser ? "row-reverse" : "row"
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span style={{ 
+                        fontSize: "11px", 
+                        color: "var(--muted)", 
+                        marginTop: "2px",
+                        flexShrink: 0
+                      }}>
+                        {(() => {
+                          if (isUser) {
+                            return <span>{userProfile.name} · {userProfile.title}</span>;
+                          }
+                          const isPseudoMod = isExp && (message.senderName === "主持人" || message.senderId === "moderator");
+                          if (isMod || isPseudoMod) {
+                            if (message.senderName === "系统提示" || message.senderName === "系统") {
+                              return <span>{message.senderName}</span>;
+                            }
+                            const name = systemPrompts?.moderatorName || message.senderName || "主持人";
+                            const title = systemPrompts?.moderatorTitle || message.senderTitle || "决策协调官";
+                            return <span>{name} · {title}</span>;
+                          }
+                          if (isExp) {
+                            const curExp = allExperts.find((e: any) => e.id === message.senderId);
+                            const isExt = curExp?.isExternalAgent;
+                            const name = curExp?.name || message.senderName;
+                            const title = curExp?.title || message.senderTitle || "总监";
+                            return (
+                              <span style={{ display: "inline-flex", alignItems: "center" }}>
+                                {name} · {title}
+                                {isExt && (
+                                  <span style={{ 
+                                    fontSize: "10px", 
+                                    color: "var(--muted)", 
+                                    padding: "1.5px 5px", 
+                                    border: "1px solid var(--line)", 
+                                    borderRadius: "4px", 
+                                    fontWeight: "normal",
+                                    display: "inline-block",
+                                    marginLeft: "6px",
+                                    lineHeight: 1
+                                  }}>
+                                    小龙虾
+                                  </span>
+                                )}
+                              </span>
+                            );
+                          }
+                          return <span>{message.senderName || ""}</span>;
+                        })()}
+                      </span>
+                      
+                      {!isUser && (
+                        <ThinkingBlock 
+                          thinkingContent={thinkingContent} 
+                          isThinkingDone={isThinkingDone} 
+                          textAlign="left" 
+                          isPopover={true}
+                        />
+                      )}
+                    </div>
+
+                    {formattedTime && (
+                      <div style={{ 
+                        display: "inline-flex", 
+                        alignItems: "center", 
+                        gap: "6px",
+                        fontSize: "11px",
+                        color: "var(--muted)",
+                        fontFamily: "var(--font-mono, monospace)",
+                        fontVariantNumeric: "tabular-nums",
+                        opacity: 0.85,
+                        userSelect: "none"
+                      }}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.8 }}>
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polyline points="12 6 12 12 16 14"></polyline>
+                          </svg>
+                          {formattedTime}
+                        </span>
+                        {((typeof message.duration === "number" || typeof activeTurnDuration === "number") && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: "3px", color: "var(--amber)", fontWeight: 500 }}>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ fill: "currentColor" }}>
+                              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                            </svg>
+                            {typeof activeTurnDuration === "number" ? activeTurnDuration : message.duration}s
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ) : (
-                <>
+                )}
+
+                <div style={{ width: "100%" }}>
                   {systemLoader && (
                     <div 
                       className="thinking-card" 
@@ -375,7 +428,6 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
                     </div>
                   )}
 
-                  {/* 1. 主持人总结发言就绪（TTFB）专属微磨砂骨架卡片 */}
                   {isModTTFB && (
                     <div className="thinking-card" style={{ borderStyle: "solid", borderColor: "var(--amber)", borderRadius: "8px", padding: "12px 14px", marginBottom: "8px" }}>
                       <div className="thinking-loader" style={{ margin: 0 }}>
@@ -390,7 +442,6 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
                     </div>
                   )}
 
-                  {/* 2. 专家发言准备就绪（TTFB）专属微磨砂骨架卡片 */}
                   {(!isThinkingDone && (isExpertTTFB || isStartingThink || thinkingContent.length > 0)) && (
                     <div 
                       className="thinking-card" 
@@ -427,35 +478,18 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
                   )}
 
                   {displayContent && (
-                    <div className="message-hover-wrapper" style={{ display: "flex", alignItems: "flex-end", justifyContent: isUser ? "flex-end" : "flex-start", gap: "8px" }}>
-                      {isUser && !isSessionActive && (
-                        <button
-                          className="message-edit-btn"
-                          onClick={() => {
-                            setEditingMessageId(message.id);
-                            setEditingContent(message.content);
-                          }}
-                          title="重新编辑"
-                        >
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                          </svg>
-                        </button>
-                      )}
-                      <div className="message-content markdown-body" style={{ fontSize: "14px", position: "relative", margin: 0 }}>
-                        <ReactMarkdown 
-                          remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
-                          rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
-                        >
-                          {displayContent}
-                        </ReactMarkdown>
-                      </div>
+                    <div className="message-content markdown-body" style={{ fontSize: "14px", position: "relative", margin: 0, width: "100%" }}>
+                      <ReactMarkdown 
+                        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+                        rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
+                      >
+                        {displayContent}
+                      </ReactMarkdown>
                     </div>
                   )}
-                </>
-              )}
-            </>
+                </div>
+              </div>
+            </div>
           );
         })()}
 
@@ -512,6 +546,8 @@ const areEqual = (prevProps: ChatMessageCardProps, nextProps: ChatMessageCardPro
     prevProps.message.expertStance === nextProps.message.expertStance &&
     prevProps.message.moderatorSummary === nextProps.message.moderatorSummary &&
     prevProps.message.sources === nextProps.message.sources &&
+    prevProps.message.duration === nextProps.message.duration &&
+    prevProps.activeTurnDuration === nextProps.activeTurnDuration &&
     prevProps.isSessionActive === nextProps.isSessionActive &&
     prevProps.editingMessageId === nextProps.editingMessageId &&
     prevProps.editingContent === nextProps.editingContent &&

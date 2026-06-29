@@ -562,6 +562,24 @@ graph TD
         <div class="alert alert-note">
           <strong>💡 提示：</strong> 您的 API 密钥等敏感信息将安全且唯一地保存在您本机的浏览器本地存储（Local Storage）中，不会上传至第三方服务器。
         </div>
+
+        <h3>1.3 专家智能体大模型独立指定路由</h3>
+        <p>如果某些专家智能体需要使用特定的大模型引擎（例如：代码审查智能体使用专门的 Codegen 代码大模型，人设建构智能体使用常识丰富的 Reasoning 推理模型），系统支持为专家指定专属的大模型路由：</p>
+        <ol>
+          <li>在首页的会议专家列表，或者在后台管理列表中，点击专家卡片上的 <strong>“编辑”</strong> 按钮。</li>
+          <li>在弹出的智能体编辑面板底部，找到 <strong>“大模型路由”</strong> 选项。</li>
+          <li>将路由模式由 <strong>“默认模型 (跟随会议室配置)”</strong> 切换为 <strong>“独立指定大模型”</strong>。</li>
+          <li>在下拉框中选择您已在系统中添加并激活的自定义大模型。</li>
+          <li>点击 <strong>“保存修改”</strong> 即可应用！</li>
+        </ol>
+        <div class="alert alert-note">
+          <strong>💡 视觉指标与降级兜底：</strong>
+          <ul>
+            <li><strong>视觉徽章</strong>：当专家独立绑定了模型时，侧边栏专家卡片的底部会高亮展示琥珀色的专属模型引擎徽章；若跟随会议室，则会自动隐藏，保持界面绝对清爽。</li>
+            <li><strong>高可用 Fallback</strong>：如果您在后台删除了专家所绑定的自定义模型，该专家在后续发言时会自动降级使用<strong>会议室当前所选的全局大模型</strong>，防范流程死锁。</li>
+            <li><strong>外部智能体隔离</strong>：对于通过物理端口 WebSocket 挂载的外部物理智能体，本路由选项会自动屏蔽，杜绝逻辑冲突。</li>
+          </ul>
+        </div>
       </section>
 
       <!-- 2. 首页指南 -->

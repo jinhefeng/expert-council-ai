@@ -1,38 +1,9 @@
 import { Expert, LLMEngineConfig, ChatMessage, LLMParamsConfig, SystemPromptsConfig } from "./types";
 import { moderatorModes } from "./experts";
-import { extractAndCleanJson, cleanAndParseJson } from "./content-parser";
+import { extractAndCleanJson, cleanAndParseJson, extractAndCleanModeratorJson } from "./content-parser";
 import { PromptLogService } from "./prompt-log-service";
 
-// 从本地环境变量自动生成系统默认引擎
-export function getSystemEngine(): LLMEngineConfig | null {
-  if (typeof process === "undefined") return null;
 
-  if (process.env.DASHSCOPE_API_KEY) {
-    return {
-      id: "system-qwen",
-      name: "系统通义千问 (DashScope)",
-      provider: "qwen",
-      baseUrl: process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      apiKey: process.env.DASHSCOPE_API_KEY,
-      model: process.env.DASHSCOPE_MODEL || "qwen-plus",
-      isActive: true,
-    };
-  }
-
-  if (process.env.OPENAI_API_KEY) {
-    return {
-      id: "system-openai",
-      name: "系统 OpenAI (env)",
-      provider: "openai",
-      baseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
-      apiKey: process.env.OPENAI_API_KEY,
-      model: process.env.OPENAI_MODEL || "gpt-4o",
-      isActive: true,
-    };
-  }
-
-  return null;
-}
 
 // 执行通用 LLM 请求
 export async function callLLM({
@@ -329,11 +300,11 @@ export async function getExpertTurn({
     tradeoff: string;
   };
 }> {
-  const activeEngine = engineConfig || getSystemEngine();
+  const activeEngine = engineConfig;
 
   if (!activeEngine) {
     throw new Error(
-      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+      "未配置大模型引擎参数。请先在后台管理中添加并激活至少一个大模型引擎！"
     );
   }
 
@@ -423,11 +394,11 @@ export async function getExpertTurnStream({
   meetingName?: string;
   meetingDesc?: string;
 }): Promise<Response> {
-  const activeEngine = engineConfig || getSystemEngine();
+  const activeEngine = engineConfig;
 
   if (!activeEngine) {
     throw new Error(
-      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+      "未配置大模型引擎参数。请先在后台管理中添加并激活至少一个大模型引擎！"
     );
   }
 
@@ -510,12 +481,12 @@ export async function getSynthesisStream({
   systemPrompts: SystemPromptsConfig;
   userProfile?: { name: string; title: string };
 }): Promise<Response> {
-  const activeEngine = engineConfig || getSystemEngine();
+  const activeEngine = engineConfig;
   const moderator = moderatorModes.find((m) => m.id === moderatorId) || moderatorModes[0];
 
   if (!activeEngine) {
     throw new Error(
-      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+      "未配置大模型引擎参数。请先在后台管理中添加并激活至少一个大模型引擎！"
     );
   }
 
@@ -602,12 +573,12 @@ export async function getSynthesis({
   decisions: string[];
   nextActions: string[];
 }> {
-  const activeEngine = engineConfig || getSystemEngine();
+  const activeEngine = engineConfig;
   const moderator = moderatorModes.find((m) => m.id === moderatorId) || moderatorModes[0];
 
   if (!activeEngine) {
     throw new Error(
-      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+      "未配置大模型引擎参数。请先在后台管理中添加并激活至少一个大模型引擎！"
     );
   }
 
@@ -667,23 +638,24 @@ export async function getSynthesis({
   });
 
   try {
-    const jsonMatch = responseText.match(/({[\s\S]*?})/);
-    if (jsonMatch) {
-      const parsed = cleanAndParseJson<any>(jsonMatch[1]);
-      if (parsed && typeof parsed === "object" && "summary" in parsed) {
-        return parsed;
-      }
-    }
+    const parsedRes = extractAndCleanModeratorJson(responseText, moderatorName, moderatorTitle);
+    return {
+      summary: parsedRes.content,
+      consensus: parsedRes.moderatorSummary.consensus,
+      disagreements: parsedRes.moderatorSummary.disagreements,
+      decisions: parsedRes.moderatorSummary.decisions,
+      nextActions: parsedRes.moderatorSummary.nextActions,
+    };
   } catch (e) {
     console.error("Failed to parse synthesis JSON", responseText, e);
   }
 
   return {
     summary: responseText,
-    consensus: ["已记录在总结中"],
-    disagreements: ["参见上述文本"],
-    decisions: ["见总结详情"],
-    nextActions: ["立即推进相关决策评估"],
+    consensus: [],
+    disagreements: [],
+    decisions: [],
+    nextActions: [],
   };
 }
 
@@ -709,12 +681,12 @@ export async function getNextSpeaker({
     return "";
   }
 
-  const activeEngine = engineConfig || getSystemEngine();
+  const activeEngine = engineConfig;
 
   if (!activeEngine) {
     if (candidateExperts.length > 1) {
       throw new Error(
-        "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+        "未配置大模型引擎参数。请先在后台管理中添加并激活至少一个大模型配置！"
       );
     }
     return candidateExperts[0].id;
@@ -776,11 +748,11 @@ export async function getFinalConclusion({
   llmParams: LLMParamsConfig;
   systemPrompts: SystemPromptsConfig;
 }): Promise<string> {
-  const activeEngine = engineConfig || getSystemEngine();
+  const activeEngine = engineConfig;
   
   if (!activeEngine) {
     throw new Error(
-      "未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！"
+      "未配置大模型引擎参数。请先在后台管理中添加并激活至少一个大模型引擎！"
     );
   }
 
@@ -825,9 +797,9 @@ export async function getInquiryDecision({
   llmParams: LLMParamsConfig;
   systemPrompts: SystemPromptsConfig;
 }): Promise<string> {
-  const activeEngine = engineConfig || getSystemEngine();
+  const activeEngine = engineConfig;
   if (!activeEngine) {
-    throw new Error("未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！");
+    throw new Error("未配置大模型引擎参数。请先在后台管理中添加并激活至少一个大模型引擎！");
   }
 
   const systemPrompt = systemPrompts.inquiryJudgmentPrompt;
@@ -908,9 +880,9 @@ export async function getDecisionOptions({
   llmParams?: LLMParamsConfig;
   systemPrompts?: SystemPromptsConfig;
 }): Promise<string[]> {
-  const activeEngine = engineConfig || getSystemEngine();
+  const activeEngine = engineConfig;
   if (!activeEngine) {
-    throw new Error("未配置 API Key 且前端未添加自定义大模型。请配置密钥后重试！");
+    throw new Error("未配置大模型引擎参数。请先在后台管理中添加并激活至少一个大模型引擎！");
   }
 
   const DEFAULT_DECISION_PROMPT = "你是一位专业的决策分析师。请根据当前讨论情况，以 JSON 数组格式输出 2-4 个具体、可供人类决策者抉择的方向性意见/备选方案。";

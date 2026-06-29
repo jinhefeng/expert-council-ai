@@ -33,6 +33,10 @@ export type Expert = TenantScoped & {
   ragEndpoint?: string;     // 外部 RAG 接口地址
   ragToken?: string;        // 外部 RAG API 鉴权 Token
   ragDatasetId?: string;    // 目标知识库/数据集 ID (Collection ID)
+
+  // 大模型路由配置
+  modelMode?: "default" | "custom"; // 路由模式: "default" (跟随会议室) | "custom" (指定独立大模型)
+  modelId?: string;                 // 独立大模型 ID (LLMEngineConfig.id)，当 modelMode 为 "custom" 时有效
 };
 
 export type LLMEngineConfig = TenantScoped & {
@@ -45,6 +49,7 @@ export type LLMEngineConfig = TenantScoped & {
   isActive: boolean;
   isReasoningModel?: boolean;
   enableStreaming?: boolean;
+  isSystem?: boolean; // 系统内置只读引擎标识
 };
 
 export type Meeting = TenantScoped & {
@@ -87,6 +92,7 @@ export type ChatMessage = TenantScoped & {
   };
   sources?: SourceItem[];
   createdAt: number;
+  duration?: number; // 发言/总结生成耗时 (秒)
 };
 
 export type SourceItem = {
@@ -108,7 +114,7 @@ export type LLMParamsConfig = TenantScoped & {
   maxAutonomousRounds?: number;           // 最大自主决策轮数
   autonomousCountdownSeconds?: number;   // 自主决策倒计时秒数
   streamInactiveTimeoutSeconds?: number;  // 流式无活动超时断流秒数
-  expertFirstCharTimeoutSeconds?: number; // 外部智能体首字响应超时秒数
+  expertFirstCharTimeoutSeconds?: number; // 专家首字响应/网络请求超时秒数（对内置和外部专家均生效）
   expertStreamTimeoutSeconds?: number;    // 外部智能体流式断流超时秒数
 };
 

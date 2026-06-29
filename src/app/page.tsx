@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useCallback,
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -17,8 +18,11 @@ import "katex/dist/katex.min.css";
 import { experts as defaultExperts, moderatorModes, mergeSystemExperts } from "@/lib/experts";
 import { ExpertModal } from "@/components/ExpertModal";
 import ChatMessageCard from "@/components/ChatMessageCard";
+import { ThinkingBlock } from "@/components/ThinkingBlock";
+import ExpertCard from "@/components/ExpertCard";
+import MeetingItem from "@/components/MeetingItem";
 import { LocalStorageService } from "@/lib/storage-service";
-import { extractAndCleanJson, cleanStreamingJson, cleanAndParseJson, beautifyListFormatting, extractInquiryPrompt } from "@/lib/content-parser";
+import { extractAndCleanJson, cleanStreamingJson, cleanAndParseJson, beautifyListFormatting, extractInquiryPrompt, extractAndCleanModeratorJson, stripModeratorPrefix, parseThinkingContent } from "@/lib/content-parser";
 import {
   Expert,
   LLMEngineConfig,
@@ -106,8 +110,8 @@ export default function Home() {
   const [systemPrompts, setSystemPrompts] = useState<SystemPromptsConfig | null>(null);
   const [businessDefaults, setBusinessDefaults] = useState<BusinessDefaultsConfig | null>(null);
   
-  // 活动的模型引擎 ID：真刀真枪下默认使用系统环境内置的 system-env
-  const [activeEngineId, setActiveEngineId] = useState<string>("system-env");
+  // 活动的模型引擎 ID
+  const [activeEngineId, setActiveEngineId] = useState<string>("");
 
   // 前端辅助交互状态
   const [question, setQuestion] = useState("");
@@ -126,6 +130,40 @@ export default function Home() {
   const [isEditingConclusion, setIsEditingConclusion] = useState(false);
   const [conclusionDraft, setConclusionDraft] = useState("");
   const [unlockedComposers, setUnlockedComposers] = useState<Record<string, boolean>>({});
+
+  // --- 独立的绝对计时状态与 Refs ---
+  const [activeTurnDuration, setActiveTurnDuration] = useState<number>(0);
+  const activeTurnTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const activeMessageIdRef = useRef<string | null>(null);
+
+  const startActiveTurnTimer = (msgId: string) => {
+    if (activeTurnTimerRef.current) {
+      clearInterval(activeTurnTimerRef.current);
+    }
+    activeMessageIdRef.current = msgId;
+    setActiveTurnDuration(0);
+    const startTime = Date.now();
+    activeTurnTimerRef.current = setInterval(() => {
+      setActiveTurnDuration(parseFloat(((Date.now() - startTime) / 1000).toFixed(1)));
+    }, 100);
+  };
+
+  const stopActiveTurnTimer = () => {
+    if (activeTurnTimerRef.current) {
+      clearInterval(activeTurnTimerRef.current);
+      activeTurnTimerRef.current = null;
+    }
+    activeMessageIdRef.current = null;
+    setActiveTurnDuration(0);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (activeTurnTimerRef.current) {
+        clearInterval(activeTurnTimerRef.current);
+      }
+    };
+  }, []);
   
   const [discussingMeetings, setDiscussingMeetings] = useState<Record<string, boolean>>({});
   const [speakingExpertIds, setSpeakingExpertIds] = useState<Record<string, string | null>>({});
@@ -239,6 +277,21 @@ export default function Home() {
   const scrollPositions = useRef<Record<string, number>>({});
   const prevMeetingIdRef = useRef<string | null>(null);
   const isAutoScrollEnabled = useRef<boolean>(true);
+  const isProgrammaticScroll = useRef<boolean>(false);
+
+  const scrollToConclusion = (behavior: ScrollBehavior = "smooth") => {
+    const conclusionEl = document.getElementById("conclusion-panel");
+    if (conclusionEl) {
+      isProgrammaticScroll.current = true;
+      conclusionEl.scrollIntoView({ behavior, block: "start" });
+      isAutoScrollEnabled.current = false;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          isProgrammaticScroll.current = false;
+        });
+      });
+    }
+  };
 
   const meetingsRef = useRef<Meeting[]>([]);
   const lastScrollTimeRef = useRef<number>(0);
@@ -248,9 +301,24 @@ export default function Home() {
 
   const handleThreadScroll = () => {
     if (!chatThreadRef.current) return;
+    
+    // 如果是程序内部发起的滚动，直接忽略该事件，避免污染用户的主动状态
+    if (isProgrammaticScroll.current) return;
+    
     const { scrollTop, scrollHeight, clientHeight } = chatThreadRef.current;
-    // 如果滚动条距离底部小于 150px，视为在最底部，开启自动滚动
-    isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 150;
+    
+    // 弹性滚动边界容错：当 scrollTop 大于可滚动最大值时归零，防止 macOS 弹性拉伸下的计算出现负值
+    const distanceToBottom = Math.max(0, scrollHeight - scrollTop - clientHeight);
+    
+    // 1. Snapping Zone (吸附区)：距离底部极近（<= 10px）时，激活自动滚动
+    if (distanceToBottom <= 10) {
+      isAutoScrollEnabled.current = true;
+    }
+    // 2. Damping Zone (阻尼区)：只有当用户向上滚动超过 60px（约两行历史发言高度）时，才视作查阅历史，关闭自动滚动
+    else if (distanceToBottom > 60) {
+      isAutoScrollEnabled.current = false;
+    }
+    // 3. 在 10px 和 60px 之间，属于状态保持静默死区（Damping Zone），自动滚动状态保持不变，避免频繁闪烁切换
   };
 
   const handleSwitchMeeting = (newMeetingId: string) => {
@@ -280,12 +348,11 @@ export default function Home() {
       setBusinessDefaults(loadedBusinessDefaults);
 
       // 决定默认的模型引擎选择
-      const activeConfig = loadedConfigs.find(c => c.isActive);
+      const activeConfig = loadedConfigs.find(c => c.isActive) || loadedConfigs[0];
       if (activeConfig) {
         setActiveEngineId(activeConfig.id);
       } else {
-        // 若没有自定义的，强制走系统环境内置大模型
-        setActiveEngineId("system-env");
+        setActiveEngineId("");
       }
 
       // 从 localStorage 加载面板折叠状态
@@ -505,7 +572,13 @@ export default function Home() {
               message.statuses.forEach((s: any) => {
                 statuses[s.expertId] = s.status;
               });
-              setBotStatuses(statuses);
+              setBotStatuses(prev => {
+                const keysNew = Object.keys(statuses);
+                const keysPrev = Object.keys(prev);
+                const isChanged = keysNew.length !== keysPrev.length || 
+                  keysNew.some(k => statuses[k] !== prev[k]);
+                return isChanged ? statuses : prev;
+              });
               break;
 
             case "stream_chunk":
@@ -648,9 +721,14 @@ export default function Home() {
         return;
       }
       lastScrollTimeRef.current = now;
+      
+      isProgrammaticScroll.current = true;
       chatEndRef.current?.scrollIntoView({ behavior: "auto" });
       requestAnimationFrame(() => {
         chatEndRef.current?.scrollIntoView({ behavior: "auto" });
+        requestAnimationFrame(() => {
+          isProgrammaticScroll.current = false;
+        });
       });
     };
 
@@ -661,14 +739,18 @@ export default function Home() {
         setTimeout(() => {
           const savedScroll = scrollPositions.current[activeMeetingId];
           if (savedScroll !== undefined) {
+            isProgrammaticScroll.current = true;
             thread.scrollTop = savedScroll;
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                isProgrammaticScroll.current = false;
+              });
+            });
             const { scrollTop, scrollHeight, clientHeight } = thread;
-            isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 150;
+            isAutoScrollEnabled.current = scrollHeight - scrollTop - clientHeight < 60;
           } else {
-            const conclusionEl = document.getElementById("conclusion-panel");
-            if (activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && conclusionEl) {
-              conclusionEl.scrollIntoView({ behavior: "auto" });
-              isAutoScrollEnabled.current = false;
+            if (activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId]) {
+              scrollToConclusion("auto");
             } else {
               chatEndRef.current?.scrollIntoView({ behavior: "auto" });
               isAutoScrollEnabled.current = true;
@@ -749,17 +831,41 @@ export default function Home() {
   // 是否缺失 API 密钥（在真实模式下，且没有自定义引擎，且假设用户没有在本地配 .env）
   // 此时我们在 UI 上输出友好提示，防止大模型请求报错
   const showKeyWarning = useMemo(() => {
-    return activeEngineId === "system-env" && engineConfigs.length === 0;
-  }, [activeEngineId, engineConfigs]);
+    return engineConfigs.length === 0;
+  }, [engineConfigs]);
 
   // 更新当前会议属性并保存
+  // 更新当前会议属性并保存 (函数式升级以彻底消除闭包竞态覆盖 bug)
   async function updateActiveMeeting(fields: Partial<Meeting>) {
-    if (!activeMeeting) return;
-    const updated = { ...activeMeeting, ...fields, updatedAt: Date.now() };
-    const nextMeetings = meetings.map(m => m.id === activeMeetingId ? updated : m);
-    setMeetings(nextMeetings);
-    await storage.saveMeeting(TENANT_ID, updated);
+    if (!activeMeetingId) return;
+    setMeetings(prevMeetings => {
+      const currentM = prevMeetings.find(m => m.id === activeMeetingId);
+      if (!currentM) return prevMeetings;
+      const updated = { ...currentM, ...fields, updatedAt: Date.now() };
+      void storage.saveMeeting(TENANT_ID, updated);
+      return prevMeetings.map(m => m.id === activeMeetingId ? updated : m);
+    });
   }
+
+  // 专家卡片多勾选并发防竞态更新专用动作 (以最新 prev 状态队列过滤或添加，防连点覆盖)
+  const toggleExpertSelection = useCallback((expertId: string) => {
+    if (!activeMeetingId) return;
+    setMeetings(prevMeetings => {
+      const currentM = prevMeetings.find(m => m.id === activeMeetingId);
+      if (!currentM) return prevMeetings;
+      const isSelected = currentM.expertIds.includes(expertId);
+      const nextIds = isSelected
+        ? currentM.expertIds.filter(id => id !== expertId)
+        : [...currentM.expertIds, expertId];
+      const updated = {
+        ...currentM,
+        expertIds: nextIds,
+        updatedAt: Date.now()
+      };
+      void storage.saveMeeting(TENANT_ID, updated);
+      return prevMeetings.map(m => m.id === activeMeetingId ? updated : m);
+    });
+  }, [activeMeetingId, storage]);
 
   // 会议管理
   function openNewMeetingModal() {
@@ -951,7 +1057,7 @@ export default function Home() {
     await storage.saveEngineConfigs(TENANT_ID, nextConfigs);
 
     if (activeEngineId === id) {
-      setActiveEngineId("system-env");
+      setActiveEngineId(nextConfigs[0]?.id || "");
     }
   }
 
@@ -960,7 +1066,7 @@ export default function Home() {
       alert("没有可导出的自定义模型配置。");
       return;
     }
-    const exportData = JSON.stringify(engineConfigs, null, 2);
+    const exportData = JSON.stringify(engineConfigs.filter(c => !c.isSystem), null, 2);
     // 采用 navigator.clipboard 以及 fallback 到 prompt
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(exportData).then(() => {
@@ -985,6 +1091,10 @@ export default function Home() {
 
       for (const item of arr) {
         if (item.id && item.name && item.provider && item.baseUrl && item.apiKey && item.model) {
+          // 防御：禁止导入系统预设只读大模型
+          if (item.isSystem || item.id.startsWith("system-")) {
+            continue;
+          }
           const existingIdx = newConfigs.findIndex(c => c.id === item.id);
           if (existingIdx >= 0) {
             newConfigs[existingIdx] = { ...newConfigs[existingIdx], ...item };
@@ -1075,8 +1185,8 @@ export default function Home() {
     contextStr: string,
     history: ChatMessage[],
     signal: AbortSignal,
-    onChunk?: (text: string, isExtracting?: boolean) => void
-  ) {
+    onChunk?: (text: string, isExtracting: boolean) => void
+  ): Promise<{ content: string; expertStance: any }> {
     if (expert.isExternalAgent) {
       if (botStatuses[expert.id] !== "online") {
         return Promise.reject(new Error(`智能体专家 [${expert.name}] 当前处于离线状态，无法发言。请确保其成功连接中继网关。`));
@@ -1123,7 +1233,7 @@ export default function Home() {
           }
           resetKeepAliveTimeout(); // 刷新 45 秒断流超时
           if (onChunk) {
-            onChunk(text, isExtracting);
+            onChunk(text, isExtracting || false);
           }
         };
 
@@ -1177,122 +1287,68 @@ export default function Home() {
       });
     }
 
-    const response = await fetch("/api/discussions/expert-turn", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question: userQuestion,
-        projectContext: contextStr,
-        expert,
-        previousTurns,
-        globalDebateIntensity: meeting.globalDebateIntensity,
-        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
-        conversationHistory: history,
-        llmParams,
-        systemPrompts,
-        userProfile,
-        meetingName: meeting.name,
-        meetingDesc: meeting.description,
-      }),
-      signal,
-    });
 
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || "大模型在生成智能体观点时失败。");
+    // 确定会议室默认引擎配置
+    const meetingEngineConfig = activeEngineConfig;
+
+    // 动态路由专家的大模型配置
+    let targetEngineConfig = meetingEngineConfig;
+    if (expert.modelMode === "custom" && expert.modelId) {
+      const matched = engineConfigs.find(c => c.id === expert.modelId);
+      if (matched) {
+        targetEngineConfig = matched;
+      } else {
+        console.warn(`[ModelRouter] 专家 [${expert.name}] 指定的大模型配置 ID "${expert.modelId}" 不存在。已自动退回到会议室默认模型 [${activeEngineConfig?.name || "未配置模型"}].`);
+      }
     }
 
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("text/event-stream")) {
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let fullContent = "";
-      if (!reader) throw new Error("No reader");
-      
-      let isNativeReasoning = false;
-      let hasClosedNativeReasoning = false;
-      
-      const onAbort = () => {
-        reader.cancel().catch(() => {});
-      };
-      signal.addEventListener("abort", onAbort);
+    const body = {
+      question: userQuestion,
+      projectContext: contextStr,
+      expert,
+      previousTurns,
+      globalDebateIntensity: meeting.globalDebateIntensity,
+      engineConfig: targetEngineConfig,
+      conversationHistory: history,
+      llmParams,
+      systemPrompts,
+      userProfile,
+      meetingName: meeting.name,
+      meetingDesc: meeting.description,
+    };
 
-      let lastActiveTime = Date.now();
-      const inactiveTimeoutSeconds = llmParams?.streamInactiveTimeoutSeconds ?? 30;
-      const watchdog = setInterval(() => {
-        if (Date.now() - lastActiveTime > inactiveTimeoutSeconds * 1000) {
-          console.warn(`[Watchdog] Expert turn stream inactive for ${inactiveTimeoutSeconds}s, canceling reader...`);
-          clearInterval(watchdog);
-          reader.cancel().catch(() => {});
-        }
-      }, 5000);
+    // 性能与稳定性增强：为内置专家网络请求挂载全局强制防假死超时器，复用后台首字超时参数（默认 90 秒）
+    const internalExpertTimeoutSecs = llmParams?.expertFirstCharTimeoutSeconds ?? 90;
+    const timeoutController = new AbortController();
+    
+    // 联动父级 Abort 信号
+    const linkAbort = () => timeoutController.abort();
+    signal.addEventListener("abort", linkAbort);
+    
+    const globalTimeoutId = setTimeout(() => {
+      timeoutController.abort();
+    }, internalExpertTimeoutSecs * 1000);
 
-      try {
-        let shouldFinish = false;
-        while (true) {
-          if (shouldFinish) break;
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          lastActiveTime = Date.now();
-          
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n");
-          for (const line of lines) {
-            if (line === "data: [DONE]") {
-              shouldFinish = true;
-              break;
-            }
-            if (line.startsWith("data: ") && line !== "data: [DONE]") {
-              try {
-                const data = JSON.parse(line.slice(6));
-                const deltaObj = data.choices[0]?.delta;
-                const reasoningChunk = deltaObj?.reasoning_content || deltaObj?.reasoning || deltaObj?.thought;
-                const contentChunk = deltaObj?.content;
-
-                if (reasoningChunk) {
-                   if (!isNativeReasoning) {
-                     fullContent += "<think>\n";
-                     isNativeReasoning = true;
-                   }
-                   fullContent += reasoningChunk;
-                }
-
-                if (contentChunk) {
-                  if (isNativeReasoning && !hasClosedNativeReasoning) {
-                    fullContent += "\n</think>\n";
-                    hasClosedNativeReasoning = true;
-                  }
-                  fullContent += contentChunk;
-                }
-
-                const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
-                if (onChunk) {
-                  if (isInsideReasoning) {
-                    onChunk(fullContent, false);
-                  } else {
-                    const cleaned = cleanStreamingJson(fullContent);
-                    const isExtracting = (fullContent.includes("<think>") && !fullContent.includes("</think>"))
-                      ? false
-                      : cleaned.length < fullContent.trim().length;
-                    onChunk(cleaned, isExtracting);
-                  }
-                }
-              } catch (e) {}
-            }
-          }
-        }
-      } finally {
-        signal.removeEventListener("abort", onAbort);
-        clearInterval(watchdog);
-      }
-      
+    try {
+      const fullContent = await requestStreamingTurn({
+        endpoint: "/api/discussions/expert-turn",
+        body,
+        signal: timeoutController.signal,
+        streamInactiveTimeoutSeconds: llmParams?.streamInactiveTimeoutSeconds ?? 30,
+        onChunk,
+        errorMsgFallback: "大模型在生成智能体观点时失败。"
+      });
       return extractAndCleanJson(fullContent, expert.name, expert.title);
-    } else {
-      return response.json();
+    } catch (streamErr: any) {
+      if (timeoutController.signal.aborted && !signal.aborted) {
+        throw new Error(`内置专家 [${expert.name}] 响应超时：大模型未在指定 ${internalExpertTimeoutSecs} 秒内完成响应，流程已自动跳过。`);
+      }
+      throw streamErr;
+    } finally {
+      clearTimeout(globalTimeoutId);
+      signal.removeEventListener("abort", linkAbort);
     }
   }
-
   // 智能相关度下一发言人决策
   async function requestNextSpeakerId(
     userQuestion: string,
@@ -1301,27 +1357,37 @@ export default function Home() {
     history: ChatMessage[],
     signal: AbortSignal
   ): Promise<string> {
-    const response = await fetch("/api/discussions/next-speaker", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question: userQuestion,
-        previousTurns,
-        candidateExperts,
-        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
-        conversationHistory: history,
-        llmParams,
-        systemPrompts,
-      }),
-      signal,
-    });
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => timeoutController.abort(), 6000); // 6秒超时
 
-    if (!response.ok) {
+    try {
+      const response = await fetch("/api/discussions/next-speaker", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: userQuestion,
+          previousTurns,
+          candidateExperts,
+          engineConfig: activeEngineConfig,
+          conversationHistory: history,
+          llmParams,
+          systemPrompts,
+        }),
+        signal: timeoutController.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        return candidateExperts[0].id;
+      }
+
+      const payload = await response.json();
+      return payload.nextSpeakerId || candidateExperts[0].id;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      console.warn("[ModelRouter] 智能指派接口异常或已超时(6s)，自动降级为首个专家顺序指派:", e);
       return candidateExperts[0].id;
     }
-
-    const payload = await response.json();
-    return payload.nextSpeakerId || candidateExperts[0].id;
   }
 
   // 主持人决策总结
@@ -1332,142 +1398,53 @@ export default function Home() {
     contextStr: string,
     history: ChatMessage[],
     signal: AbortSignal,
-    onChunk?: (text: string) => void
+    onChunk?: (text: string, isExtracting: boolean) => void
   ) {
-    const response = await fetch("/api/discussions/synthesis", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question: userQuestion,
-        projectContext: contextStr,
-        expertRounds,
-        moderatorId: meeting.moderatorId,
-        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
-        conversationHistory: history,
-        llmParams,
-        systemPrompts,
-        userProfile,
-      }),
+    const activeEngine = activeEngineConfig;
+    const body = {
+      question: userQuestion,
+      projectContext: contextStr,
+      expertRounds,
+      moderatorId: meeting.moderatorId || "balanced",
+      engineConfig: activeEngine,
+      conversationHistory: history,
+      llmParams,
+      systemPrompts,
+      userProfile,
+    };
+
+    const fullContent = await requestStreamingTurn({
+      endpoint: "/api/discussions/synthesis",
+      body,
       signal,
+      streamInactiveTimeoutSeconds: llmParams?.streamInactiveTimeoutSeconds ?? 30,
+      onChunk: onChunk
+        ? (text: string, isExtracting: boolean) => onChunk(stripModeratorPrefix(text, systemPrompts?.moderatorName, systemPrompts?.moderatorTitle), isExtracting)
+        : undefined,
+      errorMsgFallback: "主持人提炼纪要时失败。"
     });
 
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || "主持人总结处理失败。");
-    }
-
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("text/event-stream")) {
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let fullContent = "";
-      if (!reader) throw new Error("No reader");
-
-      let isNativeReasoning = false;
-      let hasClosedNativeReasoning = false;
-
-      const onAbort = () => {
-        reader.cancel().catch(() => {});
-      };
-      signal.addEventListener("abort", onAbort);
-
-      let lastActiveTime = Date.now();
-      const inactiveTimeoutSeconds = llmParams?.streamInactiveTimeoutSeconds ?? 30;
-      const watchdog = setInterval(() => {
-        if (Date.now() - lastActiveTime > inactiveTimeoutSeconds * 1000) {
-          console.warn(`[Watchdog] Synthesis stream inactive for ${inactiveTimeoutSeconds}s, canceling reader...`);
-          clearInterval(watchdog);
-          reader.cancel().catch(() => {});
-        }
-      }, 5000);
-
-      try {
-        let shouldFinish = false;
-        while (true) {
-          if (shouldFinish) break;
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          lastActiveTime = Date.now();
-          
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n");
-          for (const line of lines) {
-            if (line === "data: [DONE]") {
-              shouldFinish = true;
-              break;
-            }
-            if (line.startsWith("data: ") && line !== "data: [DONE]") {
-              try {
-                const data = JSON.parse(line.slice(6));
-                const reasoningChunk = data.choices[0]?.delta?.reasoning_content;
-                const contentChunk = data.choices[0]?.delta?.content;
-
-                if (reasoningChunk) {
-                  if (!isNativeReasoning) {
-                    fullContent += "<think>\n";
-                    isNativeReasoning = true;
-                  }
-                  fullContent += reasoningChunk;
-                }
-
-                if (contentChunk) {
-                  if (isNativeReasoning && !hasClosedNativeReasoning) {
-                    fullContent += "\n</think>\n";
-                    hasClosedNativeReasoning = true;
-                  }
-                  fullContent += contentChunk;
-                }
-
-                const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
-                if (onChunk) {
-                  if (isInsideReasoning) {
-                    onChunk(fullContent);
-                  } else {
-                    onChunk(cleanStreamingJson(fullContent));
-                  }
-                }
-              } catch (e) {}
-            }
-          }
-        }
-      } catch (err: any) {
-        if (err.name === "AbortError" || signal.aborted || err.message?.toLowerCase().includes("abort")) {
-          console.log("Synthesis stream reading aborted safely.");
-        } else {
-          throw err;
-        }
-      } finally {
-        signal.removeEventListener("abort", onAbort);
-        clearInterval(watchdog);
-      }
-
-      try {
-        const firstBrace = fullContent.indexOf("{");
-        const lastBrace = fullContent.lastIndexOf("}");
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-          const jsonString = fullContent.substring(firstBrace, lastBrace + 1);
-          const parsed = cleanAndParseJson<any>(jsonString);
-          if (parsed && typeof parsed === "object" && "summary" in parsed) {
-            return parsed;
-          }
-        }
-      } catch (e) {
-        console.error("Failed to parse streaming synthesis JSON", fullContent, e);
-      }
-
+    try {
+      const parsedRes = extractAndCleanModeratorJson(fullContent, systemPrompts?.moderatorName, systemPrompts?.moderatorTitle);
       return {
-        summary: fullContent,
-        consensus: ["已记录在总结中"],
-        disagreements: ["参见上述文本"],
-        decisions: ["见总结详情"],
-        nextActions: ["立即推进相关决策评估"],
+        summary: parsedRes.content,
+        consensus: parsedRes.moderatorSummary.consensus,
+        disagreements: parsedRes.moderatorSummary.disagreements,
+        decisions: parsedRes.moderatorSummary.decisions,
+        nextActions: parsedRes.moderatorSummary.nextActions,
       };
-    } else {
-      return response.json();
+    } catch (e) {
+      console.error("Failed to parse streaming synthesis JSON", fullContent, e);
     }
-  }
 
+    return {
+      summary: fullContent,
+      consensus: ["已记录在总结中"],
+      disagreements: ["参见上述文本"],
+      decisions: ["见总结详情"],
+      nextActions: ["立即推进相关决策评估"],
+    };
+  }
   // 调用 AI 判定是否需要追问补充信息
   async function requestInquiryCheck(
     meetingId: string,
@@ -1483,7 +1460,7 @@ export default function Home() {
         question: userQuestion,
         projectContext: contextStr,
         conversationHistory: history,
-        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
+        engineConfig: activeEngineConfig,
         llmParams,
         systemPrompts,
       }),
@@ -1518,7 +1495,7 @@ export default function Home() {
         projectContext: contextStr,
         conversationHistory: history,
         synthesisSummary,
-        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
+        engineConfig: activeEngineConfig,
         llmParams: safeLlmParams,
         systemPrompts: safeSystemPrompts,
       }),
@@ -1583,6 +1560,12 @@ export default function Home() {
     if (!userQuestion) return;
 
     setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
+    if (!activeEngineConfig) {
+      alert("⚠️ 当前系统未配置或激活任何大模型引擎，请前往“后台管理 · 模型管理”添加并激活您的大模型配置以启动圆桌讨论！");
+      setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+      return;
+    }
+
     if (!editParams) {
       setQuestion("");
       setSources([]);
@@ -1666,6 +1649,7 @@ export default function Home() {
         setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
         
         const modMessageId = `msg-${Date.now()}-mod`;
+        const modMessageStartTime = Date.now(); // 绝对计时起点 (气泡出现)
         const currentModMode = moderatorModes.find(m => m.id === currentMeeting.moderatorId) || moderatorModes[0];
         let modMessage: ChatMessage = {
           id: modMessageId,
@@ -1681,6 +1665,7 @@ export default function Home() {
         let nextMsgs = [...currentMeeting.messages, modMessage];
         currentMeeting = { ...currentMeeting, messages: nextMsgs };
         setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
+        startActiveTurnTimer(modMessageId);
 
         const synth = await requestSynthesis(
           currentMeeting, 
@@ -1689,8 +1674,13 @@ export default function Home() {
           contextStr, 
           conversationHistory, 
           signal,
-          (text) => {
-            modMessage = { ...modMessage, content: text };
+          (text, isExtracting) => {
+            modMessage = { 
+              ...modMessage, 
+              content: text,
+              isStanceExtracting: isExtracting || false,
+              duration: parseFloat(((Date.now() - modMessageStartTime) / 1000).toFixed(1))
+            };
             setMeetings((prev) =>
               prev.map((m) => {
                 if (m.id !== targetMeetingId) return m;
@@ -1703,23 +1693,48 @@ export default function Home() {
           }
         );
         
+        stopActiveTurnTimer();
+        const synthDuration = parseFloat(((Date.now() - modMessageStartTime) / 1000).toFixed(2)); // 气泡结束绝对时长
+        
+        // 流式读取完成，大模型开始 done。为了给用户提供提炼 Loading 的平滑过渡视觉，我们先保持 Loading 状态
         modMessage = {
           ...modMessage,
           content: synth.summary,
-          moderatorSummary: {
-            consensus: synth.consensus || [],
-            disagreements: synth.disagreements || [],
-            decisions: synth.decisions || [],
-            nextActions: synth.nextActions || [],
-          },
+          isStanceExtracting: true,
+          duration: synthDuration,
         };
+        setMeetings((prev) =>
+          prev.map((m) => {
+            if (m.id !== targetMeetingId) return m;
+            const updatedMessages = m.messages.map((msg) =>
+              msg.id === modMessageId ? modMessage : msg
+            );
+            return { ...m, messages: updatedMessages };
+          })
+        );
 
-        const finalMessages = currentMeeting.messages.map(msg => msg.id === modMessageId ? modMessage : msg);
-        await saveCurrentMeetingState({ ...currentMeeting, messages: finalMessages });
-        
-        setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
-        setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
-        return;
+        setTimeout(async () => {
+          modMessage = {
+            ...modMessage,
+            moderatorSummary: {
+              consensus: synth.consensus || [],
+              disagreements: synth.disagreements || [],
+              decisions: synth.decisions || [],
+              nextActions: synth.nextActions || [],
+            },
+            isStanceExtracting: false, // 提炼结束，展示卡片
+            duration: synthDuration,
+          };
+
+          const finalMessages = currentMeeting.messages.map(msg => msg.id === modMessageId ? modMessage : msg);
+          const updatedMeeting = { ...currentMeeting, messages: finalMessages };
+          
+          setMeetings(prev => prev.map(m => m.id === targetMeetingId ? updatedMeeting : m));
+          await saveCurrentMeetingState(updatedMeeting);
+          
+          setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+          setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+        }, 800);
       }
 
       // 如果是“手动点名”模式，只生成一个占位消息，提示用户点名，不自动流转队列
@@ -1856,7 +1871,12 @@ export default function Home() {
           let currentExpert: Expert;
           if (currentMeeting.turnOrderMode === "relevance" && remainCandidates.length > 1) {
             setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: true }));
-            const nextId = await requestNextSpeakerId(activeQuestion, previousTurns, remainCandidates, conversationHistory, signal);
+            let nextId = remainCandidates[0].id;
+            try {
+              nextId = await requestNextSpeakerId(activeQuestion, previousTurns, remainCandidates, conversationHistory, signal);
+            } catch (err) {
+              console.warn("[MeetingLoop] 获取智能下一发言人失败，已自动降级为顺序选择:", err);
+            }
             setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: false }));
             currentExpert = remainCandidates.find(e => e.id === nextId) || remainCandidates[0];
           } else {
@@ -1868,6 +1888,7 @@ export default function Home() {
 
           // 2. 先创建一条空的专家发言
           const expertMessageId = `msg-${Date.now()}-${currentExpert.id}`;
+          const expertMessageStartTime = Date.now(); // 绝对计时起点 (气泡出现)
           let expertMessage: ChatMessage = {
             id: expertMessageId,
             meetingId: targetMeetingId,
@@ -1883,14 +1904,16 @@ export default function Home() {
           let nextMsgs = [...currentMeeting.messages, expertMessage];
           currentMeeting = { ...currentMeeting, messages: nextMsgs };
           setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
+          startActiveTurnTimer(expertMessageId);
 
           let finalTurnContent = "";
           let finalExpertStance = undefined;
+          let finalExpertDuration = 0;
 
           try {
             let guidedQuestion = activeQuestion;
             if (discussionDecisions.length > 0) {
-              guidedQuestion = `【此前评审已达成的决议与共识】：\n${discussionDecisions.map((d, i) => `${i + 1}. ${d}`).join("\n")}\n\n【本轮针对性研讨议题】：${activeQuestion}`;
+              guidedQuestion = `【此前评审已达成决议与共识】：\n${discussionDecisions.map((d, i) => `${i + 1}. ${d}`).join("\n")}\n\n【本轮针对性研讨议题】：${activeQuestion}`;
             }
 
             const turnResult = await requestExpertTurn(
@@ -1905,7 +1928,8 @@ export default function Home() {
                 expertMessage = { 
                   ...expertMessage, 
                   content: text,
-                  isStanceExtracting: isExtracting || false
+                  isStanceExtracting: isExtracting || false,
+                  duration: parseFloat(((Date.now() - expertMessageStartTime) / 1000).toFixed(1))
                 };
                 setMeetings((prev) =>
                   prev.map((m) => {
@@ -1921,6 +1945,7 @@ export default function Home() {
             
             finalTurnContent = turnResult.content;
             finalExpertStance = turnResult.expertStance;
+            finalExpertDuration = parseFloat(((Date.now() - expertMessageStartTime) / 1000).toFixed(2)); // 气泡结束绝对时长
           } catch (error: any) {
             console.error(`专家 [${currentExpert.name}] 发言异常:`, error);
             if (error.name === "AbortError" || signal.aborted) throw error;
@@ -1928,12 +1953,15 @@ export default function Home() {
             const isTimeout = errMsg.includes("超时") || errMsg.includes("timeout") || errMsg.includes("limit");
             finalTurnContent = isTimeout ? "__TIMEOUT__" : "__ERROR__";
             finalExpertStance = undefined;
+            finalExpertDuration = parseFloat(((Date.now() - expertMessageStartTime) / 1000).toFixed(2));
           }
 
+          stopActiveTurnTimer();
           expertMessage = {
             ...expertMessage,
             content: finalTurnContent,
             expertStance: finalExpertStance,
+            duration: finalExpertDuration,
           };
 
           nextMsgs = currentMeeting.messages.map(msg => 
@@ -1971,56 +1999,103 @@ export default function Home() {
           createdAt: Date.now(),
         };
 
+        const modMessageStartTime = Date.now(); // 绝对计时起点 (气泡出现)
         let nextMsgs = [...currentMeeting.messages, modMessage];
         currentMeeting = { ...currentMeeting, messages: nextMsgs };
         setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
+        startActiveTurnTimer(modMessageId);
 
-        const synth = await requestSynthesis(
-          currentMeeting,
-          activeQuestion,
-          previousTurns,
-          activeContext,
-          conversationHistory,
-          signal,
-          (text) => {
-            modMessage = { ...modMessage, content: text };
-            setMeetings((prev) =>
-              prev.map((m) => {
-                if (m.id !== targetMeetingId) return m;
-                const updatedMessages = m.messages.map((msg) =>
-                  msg.id === modMessageId ? modMessage : msg
-                );
-                return { ...m, messages: updatedMessages };
-              })
-            );
-          }
-        );
+        let synth;
+        try {
+          synth = await requestSynthesis(
+            currentMeeting,
+            activeQuestion,
+            previousTurns,
+            activeContext,
+            conversationHistory,
+            signal,
+            (text, isExtracting) => {
+              modMessage = { 
+                ...modMessage, 
+                content: text,
+                isStanceExtracting: isExtracting || false,
+                duration: parseFloat(((Date.now() - modMessageStartTime) / 1000).toFixed(1))
+              };
+              setMeetings((prev) =>
+                prev.map((m) => {
+                  if (m.id !== targetMeetingId) return m;
+                  const updatedMessages = m.messages.map((msg) =>
+                    msg.id === modMessageId ? modMessage : msg
+                  );
+                  return { ...m, messages: updatedMessages };
+                })
+              );
+            }
+          );
+        } catch (synthError: any) {
+          console.error("[MeetingLoop] 主持人总结请求异常:", synthError);
+          if (synthError.name === "AbortError" || signal.aborted) throw synthError;
+          synth = {
+            summary: "⚠️ [主持人提炼纪要时发生网络连接异常，已自动跳过该总结环节以保障流程流转]",
+            consensus: [],
+            disagreements: [],
+            decisions: [],
+            nextActions: [],
+            duration: parseFloat(((Date.now() - modMessageStartTime) / 1000).toFixed(2))
+          };
+        }
 
+        stopActiveTurnTimer();
+        const synthDuration = parseFloat(((Date.now() - modMessageStartTime) / 1000).toFixed(2)); // 气泡结束绝对时长
+
+        // 流式读取完成，大模型开始 done。为了给用户提供提炼 Loading 的平滑过渡视觉，我们先保持 Loading 状态
         modMessage = {
           ...modMessage,
           content: synth.summary,
-          moderatorSummary: {
-            consensus: synth.consensus || [],
-            disagreements: synth.disagreements || [],
-            decisions: synth.decisions || [],
-            nextActions: synth.nextActions || [],
-          },
+          isStanceExtracting: true,
+          duration: synthDuration,
         };
+        setMeetings((prev) =>
+          prev.map((m) => {
+            if (m.id !== targetMeetingId) return m;
+            const updatedMessages = m.messages.map((msg) =>
+              msg.id === modMessageId ? modMessage : msg
+            );
+            return { ...m, messages: updatedMessages };
+          })
+        );
 
-        if (synth.decisions && Array.isArray(synth.decisions)) {
-          synth.decisions.forEach((d: string) => {
-            if (d && !discussionDecisions.includes(d)) {
-              discussionDecisions.push(d);
-            }
-          });
-        }
+        setTimeout(async () => {
+          modMessage = {
+            ...modMessage,
+            moderatorSummary: {
+              consensus: synth.consensus || [],
+              disagreements: synth.disagreements || [],
+              decisions: synth.decisions || [],
+              nextActions: synth.nextActions || [],
+            },
+            isStanceExtracting: false, // 提炼结束，展示卡片
+            duration: synthDuration,
+          };
 
-        nextMsgs = currentMeeting.messages.map(msg => msg.id === modMessageId ? modMessage : msg);
-        await saveCurrentMeetingState({ ...currentMeeting, messages: nextMsgs });
+          if (synth.decisions && Array.isArray(synth.decisions)) {
+            synth.decisions.forEach((d) => {
+              if (d && !discussionDecisions.includes(d)) {
+                discussionDecisions.push(d);
+              }
+            });
+          }
 
-        setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+          let finalMessages = currentMeeting.messages.map(msg => 
+            msg.id === modMessageId ? modMessage : msg
+          );
+          const updatedMeeting = { ...currentMeeting, messages: finalMessages };
+          
+          setMeetings(prev => prev.map(m => m.id === targetMeetingId ? updatedMeeting : m));
+          await saveCurrentMeetingState(updatedMeeting);
 
-        // ================= 后置：决策提取与状态机抉择分流 =================
+          setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+        }, 800);
         // 同步最新的配置属性
         const latestPostM = meetingsRef.current.find(m => m.id === targetMeetingId) || currentMeeting;
         currentMeeting.moderatorAutonomy = latestPostM.moderatorAutonomy;
@@ -2203,6 +2278,7 @@ export default function Home() {
       setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
       setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: null }));
       setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+      setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: false }));
       delete discussAbortControllersRef.current[targetMeetingId];
     }
   }
@@ -2211,6 +2287,11 @@ export default function Home() {
   async function handleCallExpertDirectly(expert: Expert) {
     if (!activeMeeting || discussingMeetings[activeMeetingId] || generatingConclusions[activeMeetingId]) return;
     
+    if (!activeEngineConfig) {
+      alert("⚠️ 当前系统未配置或激活任何大模型引擎，请前往“后台管理 · 模型管理”添加并激活您的大模型配置以手动点名发言！");
+      return;
+    }
+
     const targetMeetingId = activeMeeting.id;
     setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
     setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: expert.id }));
@@ -2252,9 +2333,11 @@ export default function Home() {
         createdAt: Date.now(),
       };
 
+      const expertMessageStartTime = Date.now(); // 绝对计时起点 (气泡出现)
       let nextMsgs = [...activeMeeting.messages, expertMessage];
       let currentMeetingState = { ...activeMeeting, messages: nextMsgs };
       setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeetingState : m));
+      startActiveTurnTimer(expertMessageId);
 
       const turnResult = await requestExpertTurn(
         activeMeeting,
@@ -2268,7 +2351,8 @@ export default function Home() {
           expertMessage = { 
             ...expertMessage, 
             content: text,
-            isStanceExtracting: isExtracting || false
+            isStanceExtracting: isExtracting || false,
+            duration: parseFloat(((Date.now() - expertMessageStartTime) / 1000).toFixed(1))
           };
           setMeetings((prev) =>
             prev.map((m) => {
@@ -2282,10 +2366,12 @@ export default function Home() {
         }
       );
 
+      stopActiveTurnTimer();
       expertMessage = {
         ...expertMessage,
         content: turnResult.content,
         expertStance: turnResult.expertStance,
+        duration: parseFloat(((Date.now() - expertMessageStartTime) / 1000).toFixed(2)) // 气泡结束绝对时长
       };
 
       nextMsgs = currentMeetingState.messages.map(msg => 
@@ -2381,14 +2467,25 @@ export default function Home() {
     if (!targetMeeting || !Array.isArray(targetMeeting.messages) || targetMeeting.messages.length === 0 || generatingConclusions[targetMeeting.id]) return;
     
     const targetMeetingId = targetMeeting.id;
+    if (!activeEngineConfig) {
+      alert("⚠️ 当前系统未配置或激活任何大模型引擎，请前往“后台管理 · 模型管理”添加并激活您的大模型配置以提炼最终结论！");
+      setGeneratingConclusions(prev => ({ ...prev, [targetMeetingId]: false }));
+      return;
+    }
     setGeneratingConclusions(prev => ({ ...prev, [targetMeetingId]: true }));
     
     // 立即跳转/平滑滚动到页面最底部的“正在生成的控制按钮”处
     setTimeout(() => {
       if (chatThreadRef.current) {
+        isProgrammaticScroll.current = true;
         chatThreadRef.current.scrollTo({
           top: chatThreadRef.current.scrollHeight,
           behavior: "smooth"
+        });
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            isProgrammaticScroll.current = false;
+          });
         });
       }
     }, 60);
@@ -2421,9 +2518,7 @@ export default function Home() {
       setUnlockedComposers(prev => ({ ...prev, [targetMeetingId]: false }));
       
       setTimeout(() => {
-        if (chatThreadRef.current) {
-          chatThreadRef.current.scrollTop = chatThreadRef.current.scrollHeight;
-        }
+        scrollToConclusion("smooth");
       }, 100);
     } catch (e: any) {
       if (e.name !== "AbortError" && !signal.aborted) {
@@ -2450,7 +2545,13 @@ export default function Home() {
     setTimeout(() => {
       // scroll to bottom
       if (chatThreadRef.current) {
+        isProgrammaticScroll.current = true;
         chatThreadRef.current.scrollTop = chatThreadRef.current.scrollHeight;
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            isProgrammaticScroll.current = false;
+          });
+        });
       }
     }, 100);
   }
@@ -2583,7 +2684,7 @@ export default function Home() {
             <span className="status-chip">{meetings.length} 场会议</span>
             <span className="status-chip">{customExperts.length} 自定义智能体</span>
             <span className="status-chip">
-              {activeEngineId === "system-env" ? "系统环境模型" : activeEngineConfig?.name || "未知引擎"}
+              {activeEngineConfig?.name || "未配置大模型"}
             </span>
             <a href="/manual.html" target="_blank" className="ghost-button" style={{ display: "inline-flex", alignItems: "center", minHeight: "30px", padding: "0 12px", textDecoration: "none", borderRadius: "999px", fontSize: "12px", border: "1px solid var(--line)", background: "var(--surface)", marginRight: "8px" }}>
               💡 使用说明
@@ -2634,39 +2735,16 @@ export default function Home() {
                 </div>
               </div>
               <div className="meeting-list">
-                {sortedMeetings.map((meeting) => {
-                  const isActive = meeting.id === activeMeetingId;
-                  const isArchived = !!meeting.finalConclusion && !unlockedComposers[meeting.id];
-                  return (
-                    <div
-                      key={meeting.id}
-                      className={`meeting-item ${isActive ? "is-active" : ""} ${isArchived ? "is-archived" : ""}`}
-                      onClick={() => handleSwitchMeeting(meeting.id)}
-                    >
-                      <div className="meeting-item-info">
-                        <span className="meeting-item-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px", width: "100%" }}>
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{meeting.name}</span>
-                          {isArchived && (
-                            <span className="meeting-item-archive-badge" style={{ flexShrink: 0 }}>已归档</span>
-                          )}
-                        </span>
-                        <span className="meeting-item-meta">
-                          {meeting.messages.length} 轮发言 · {meeting.expertIds.length} 专家
-                        </span>
-                      </div>
-                      <div className="meeting-item-actions">
-                        <button
-                          className="btn-delete"
-                          type="button"
-                          onClick={(e) => handleDeleteMeeting(meeting.id, e)}
-                          title="删除会议"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
+                {sortedMeetings.map((meeting) => (
+                  <MeetingItem
+                    key={meeting.id}
+                    meeting={meeting}
+                    isActive={meeting.id === activeMeetingId}
+                    isArchived={!!meeting.finalConclusion && !unlockedComposers[meeting.id]}
+                    handleSwitchMeeting={handleSwitchMeeting}
+                    handleDeleteMeeting={handleDeleteMeeting}
+                  />
+                ))}
               </div>
             </div>
           )}
@@ -2691,166 +2769,32 @@ export default function Home() {
           </div>
               
               <div className="role-list">
-                {displayExperts.map((expert) => {
-                  const isSelected = activeMeeting?.expertIds.includes(expert.id) ?? false;
-                  const isSpeaking = activeMeetingId ? speakingExpertIds[activeMeetingId] === expert.id : false;
-
-                  return (
-                    <div
-                      key={expert.id}
-                      className={`role-card ${isSelected ? "is-selected" : ""} ${isSpeaking ? "is-speaking" : ""} ${expert.isExternalAgent ? "is-external-agent" : ""} ${isControlsDisabled ? "is-disabled" : ""}`}
-                      style={{ opacity: isControlsDisabled ? 0.6 : 1, transition: "opacity 0.2s" }}
-                    >
-                      <div className="role-toggle">
-                        <div 
-                          className="role-topline" 
-                          style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer" }}
-                          onClick={() => {
-                            if (isControlsDisabled) return;
-                            if (!activeMeeting) return;
-                            const ids = isSelected
-                              ? activeMeeting.expertIds.filter(id => id !== expert.id)
-                              : [...activeMeeting.expertIds, expert.id];
-                              
-                            if (!isSelected) {
-                              const newDict = { ...expertActivationTimestamps, [expert.id]: Date.now() };
-                              setExpertActivationTimestamps(newDict);
-                              localStorage.setItem("DC_expert_activations", JSON.stringify(newDict));
-                            }
-                            
-                            void updateActiveMeeting({ expertIds: ids });
-                          }}
-                        >
-                          <div style={{ flex: 1 }}>
-                            <p className="role-name" style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                              {expert.name}
-                              {expert.isExternalAgent && (
-                                <span style={{ fontSize: "10px", color: "var(--muted)", padding: "1.5px 5px", border: "1px solid var(--line)", borderRadius: "4px", fontWeight: "normal" }}>
-                                  小龙虾
-                                </span>
-                              )}
-                              {!expert.isExternalAgent && (
-                                <span className={`intensity-badge lvl-${expert.debateIntensity}`}>
-                                  Lvl {expert.debateIntensity} 对抗
-                                </span>
-                              )}
-                              {expert.isExternalAgent && (
-                                <span 
-                                  style={{
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    gap: "4px",
-                                    fontSize: "10px",
-                                    padding: "2px 6px",
-                                    borderRadius: "4px",
-                                    fontWeight: 600,
-                                    background: botStatuses[expert.id] === "online" ? "rgba(40,167,69,0.12)" : "rgba(220,53,69,0.12)",
-                                    color: botStatuses[expert.id] === "online" ? "#28a745" : "#dc3545",
-                                    border: botStatuses[expert.id] === "online" ? "1px solid rgba(40,167,69,0.25)" : "1px solid rgba(220,53,69,0.25)"
-                                  }}
-                                >
-                                  <span 
-                                    className={botStatuses[expert.id] === "online" ? "online-dot-pulse" : ""}
-                                    style={{
-                                      width: "6px",
-                                      height: "6px",
-                                      borderRadius: "50%",
-                                      background: botStatuses[expert.id] === "online" ? "#28a745" : "#dc3545"
-                                    }} 
-                                  />
-                                  {botStatuses[expert.id] === "online" ? "在线" : "离线"}
-                                </span>
-                              )}
-                            </p>
-                            <p className="role-title">{expert.title}</p>
-                          </div>
-                          
-                          <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                            <span
-                              className={`checkmark ${isSelected ? "is-active" : ""}`}
-                              aria-hidden="true"
-                            />
-                          </div>
-                        </div>
-                        <p className="role-lens">{expert.lens}</p>
-                        
-                        <div style={{ marginTop: "8px", borderTop: "1px dashed var(--line)", paddingTop: "6px" }}>
-                          <label className="intensity-selector">
-                            <span style={{ fontSize: "11px", color: "var(--muted)" }}>辩论强度</span>
-                            <input
-                              type="range"
-                              min="1"
-                              max="5"
-                              value={expert.debateIntensity}
-                              disabled={isControlsDisabled}
-                              style={{ cursor: isControlsDisabled ? "not-allowed" : "auto" }}
-                              onChange={async (e) => {
-                                const val = Number(e.target.value);
-                                if (expert.isCustom) {
-                                  const updated = { ...expert, debateIntensity: val };
-                                  setCustomExperts(prev => prev.map(ex => ex.id === expert.id ? updated : ex));
-                                  await storage.saveCustomExpert(TENANT_ID, updated);
-                                } else {
-                                  expert.debateIntensity = val;
-                                  setMeetings([...meetings]);
-                                }
-                              }}
-                            />
-                            <span>{expert.debateIntensity}</span>
-                          </label>
-                        </div>
-
-                        {/* 主持人点名模式：如果专家参会了，且非发言状态，显示点名发言按钮 */}
-                        {activeMeeting?.turnOrderMode === "manual" && isSelected && !(activeMeetingId ? discussingMeetings[activeMeetingId] : false) && (
-                          <button
-                            className="btn-small-action active"
-                            type="button"
-                            style={{ width: "100%", marginTop: "8px" }}
-                            onClick={() => handleCallExpertDirectly(expert)}
-                          >
-                            点名发言 👉
-                          </button>
-                        )}
-                        {isSpeaking && (
-                          <div className="speaking-indicator" style={{ marginTop: "6px" }}>
-                            <span>● Speaking...</span>
-                          </div>
-                        )}
-                      </div>
-                      
-                      {expert.isCustom && expert.meetingId && (
-                        <div style={{ position: "absolute", right: "12px", top: "42px", display: "flex", gap: "8px" }}>
-                          <button
-                            className="text-button"
-                            type="button"
-                            onClick={() => !isControlsDisabled && openEditCustomModal(expert)}
-                            disabled={isControlsDisabled}
-                            style={{ 
-                              color: isControlsDisabled ? "var(--muted)" : "var(--amber)", 
-                              cursor: isControlsDisabled ? "not-allowed" : "pointer",
-                              opacity: isControlsDisabled ? 0.5 : 1
-                            }}
-                          >
-                            编辑
-                          </button>
-                          <button
-                            className="text-button"
-                            type="button"
-                            onClick={() => !isControlsDisabled && setDeleteCandidate(expert)}
-                            disabled={isControlsDisabled}
-                            style={{ 
-                              color: isControlsDisabled ? "var(--muted)" : "inherit", 
-                              cursor: isControlsDisabled ? "not-allowed" : "pointer",
-                              opacity: isControlsDisabled ? 0.5 : 1
-                            }}
-                          >
-                            删除
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                {displayExperts.map((expert) => (
+                  <ExpertCard
+                    key={expert.id}
+                    expert={expert}
+                    isSelected={activeMeeting?.expertIds.includes(expert.id) ?? false}
+                    isSpeaking={activeMeetingId ? speakingExpertIds[activeMeetingId] === expert.id : false}
+                    isControlsDisabled={isControlsDisabled}
+                    expertActivationTimestamps={expertActivationTimestamps}
+                    setExpertActivationTimestamps={setExpertActivationTimestamps}
+                    updateActiveMeeting={updateActiveMeeting}
+                    toggleExpertSelection={toggleExpertSelection}
+                    activeMeeting={activeMeeting}
+                    botStatus={botStatuses[expert.id]}
+                    meetings={meetings}
+                    setMeetings={setMeetings}
+                    setCustomExperts={setCustomExperts}
+                    storage={storage}
+                    tenantId={TENANT_ID}
+                    engineConfigs={engineConfigs}
+                    discussingMeetings={discussingMeetings}
+                    activeMeetingId={activeMeetingId}
+                    handleCallExpertDirectly={handleCallExpertDirectly}
+                    openEditCustomModal={openEditCustomModal}
+                    setDeleteCandidate={setDeleteCandidate}
+                  />
+                ))}
               </div>
 
 
@@ -2911,7 +2855,7 @@ export default function Home() {
           {/* 真实模式下，若未配大模型引擎，展示全局警告条并引导 */}
           {showKeyWarning && (
             <div className="note-message" style={{ borderLeft: "4px solid var(--amber)", borderRadius: "4px", margin: "14px 18px 0", background: "var(--amber-soft)", color: "#684c08" }}>
-              <strong>⚠️ 当前为【真枪实弹运行模式】</strong>：若您在本地的 `.env.local` 配置文件中配置了 `DASHSCOPE_API_KEY` 或 `OPENAI_API_KEY`，可直接选用【系统默认大模型】启动；若未配置，请点击右侧【自定义大模型服务】输入您的 API 密钥，否则圆桌会议发送提问时将会报错。
+              <strong>⚠️ 尚未配置任何大模型引擎</strong>：请前往“后台管理 · 模型管理”添加并激活您的 API 大模型引擎配置，否则圆桌会议将无法正常发起对话。
             </div>
           )}
 
@@ -2936,6 +2880,7 @@ export default function Home() {
                     allExperts={allExperts}
                     speakingExpertId={speakingExpertIds[activeMeetingId] || null}
                     isSynthesisPending={!!synthesisPendingMeetings[activeMeetingId]}
+                    activeTurnDuration={activeMessageIdRef.current === message.id ? activeTurnDuration : undefined}
                     editingMessageId={editingMessageId}
                     editingContent={editingContent}
                     setEditingMessageId={setEditingMessageId}
@@ -3419,54 +3364,65 @@ export default function Home() {
               </div>
             )}
 
-            {/* 最终结论展示/编辑面板 (讨论解锁时不展示) */}
-            {activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && (
-              <div id="conclusion-panel" className="conclusion-panel" style={{ 
-                margin: "32px 18px 0px", 
-                padding: "24px 24px 8px 24px", 
-                border: "2px solid var(--amber)", 
-                borderRadius: "12px", 
-                background: "var(--amber-soft)",
-                position: "relative",
-                scrollMarginTop: "32px"
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", borderBottom: "1px solid rgba(212,175,55,0.3)", paddingBottom: "12px" }}>
-                  <h3 style={{ margin: 0, color: "#684c08", display: "flex", alignItems: "center", gap: "8px", fontSize: "16px" }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
-                    会议最终结论
-                  </h3>
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    <button className="ghost-button export-hidden" onClick={() => { setConclusionDraft(activeMeeting.finalConclusion || ""); setIsEditingConclusion(true); }} style={{ fontSize: "12px", padding: "4px 12px", height: "auto", minHeight: "28px", display: "flex", alignItems: "center", gap: "6px" }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                      编辑
-                    </button>
-                  </div>
-                </div>
-                
-                {isEditingConclusion ? (
-                  <div>
-                    <textarea 
-                      value={conclusionDraft} 
-                      onChange={e => setConclusionDraft(e.target.value)}
-                      style={{ width: "100%", height: "200px", padding: "12px", borderRadius: "8px", border: "1px solid var(--line-strong)", resize: "vertical", fontFamily: "inherit", fontSize: "14px", lineHeight: 1.6 }}
-                    />
-                    <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
-                      <button className="ghost-button" onClick={() => setIsEditingConclusion(false)}>取消</button>
-                      <button className="primary-button" onClick={handleSaveConclusion}>保存结论</button>
+            {/* 最终结论展示/编辑面板 (讨论解锁及提炼生成时不展示) */}
+            {activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && !generatingConclusions[activeMeetingId] && (() => {
+              const { displayContent } = parseThinkingContent(activeMeeting?.finalConclusion || "");
+
+              return (
+                <div id="conclusion-panel" className="conclusion-panel" style={{ 
+                  margin: "32px 18px 0px", 
+                  padding: "24px 24px 8px 24px", 
+                  border: "2px solid var(--amber)", 
+                  borderRadius: "12px", 
+                  background: "var(--amber-soft)",
+                  position: "relative",
+                  scrollMarginTop: "32px"
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", borderBottom: "1px solid rgba(212,175,55,0.3)", paddingBottom: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "16px", flex: 1 }}>
+                      <h3 style={{ margin: 0, color: "#684c08", display: "flex", alignItems: "center", gap: "8px", fontSize: "16px" }}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+                        会议最终结论
+                      </h3>
+                    </div>
+                    
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button className="ghost-button export-hidden" onClick={() => { 
+                        const { displayContent: editContent } = parseThinkingContent(activeMeeting?.finalConclusion || "");
+                        setConclusionDraft(editContent); 
+                        setIsEditingConclusion(true); 
+                      }} style={{ fontSize: "12px", padding: "4px 12px", height: "auto", minHeight: "28px", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                        编辑
+                      </button>
                     </div>
                   </div>
-                ) : (
-                  <div className="markdown-body" style={{ fontSize: "14px", color: "var(--ink)" }}>
-                    <ReactMarkdown 
-                      remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
-                      rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
-                    >
-                      {activeMeeting.finalConclusion}
-                    </ReactMarkdown>
-                  </div>
-                )}
-              </div>
-            )}
+                  
+                  {isEditingConclusion ? (
+                    <div>
+                      <textarea 
+                        value={conclusionDraft} 
+                        onChange={e => setConclusionDraft(e.target.value)}
+                        style={{ width: "100%", height: "200px", padding: "12px", borderRadius: "8px", border: "1px solid var(--line-strong)", resize: "vertical", fontFamily: "inherit", fontSize: "14px", lineHeight: 1.6 }}
+                      />
+                      <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
+                        <button className="ghost-button" onClick={() => setIsEditingConclusion(false)}>取消</button>
+                        <button className="primary-button" onClick={handleSaveConclusion}>保存结论</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="markdown-body" style={{ fontSize: "14px", color: "var(--ink)" }}>
+                      <ReactMarkdown 
+                        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+                        rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
+                      >
+                        {displayContent}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div ref={chatEndRef} />
           </section>
@@ -3673,7 +3629,9 @@ export default function Home() {
                           title="选择模型引擎"
                           style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
                         >
-                          <option value="system-env">系统内置</option>
+                          {engineConfigs.length === 0 && (
+                            <option value="">未配置大模型</option>
+                          )}
                           {engineConfigs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
                       </div>
@@ -3749,6 +3707,7 @@ export default function Home() {
           onSave={handleSaveCustomExpert}
           initialData={customModalDraft}
           meetingContext={activeMeeting ? { name: activeMeeting.name, description: activeMeeting.description } : undefined}
+          engineConfigs={engineConfigs}
         />
 
         {/* 新建/编辑会议 Modal */}
@@ -3963,4 +3922,171 @@ export default function Home() {
       </main>
     </main>
   );
+}
+
+interface StreamingTurnOptions {
+  endpoint: string;
+  body: any;
+  signal: AbortSignal;
+  streamInactiveTimeoutSeconds?: number;
+  onChunk?: (text: string, isExtracting: boolean) => void;
+  errorMsgFallback: string;
+}
+
+async function requestStreamingTurn({
+  endpoint,
+  body,
+  signal,
+  streamInactiveTimeoutSeconds = 30,
+  onChunk,
+  errorMsgFallback
+}: StreamingTurnOptions): Promise<string> {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || errorMsgFallback);
+  }
+
+  const contentType = response.headers.get("content-type");
+  if (contentType && contentType.includes("text/event-stream")) {
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let fullContent = "";
+    if (!reader) throw new Error("No reader");
+
+    let isNativeReasoning = false;
+    let hasClosedNativeReasoning = false;
+
+    const onAbort = () => {
+      reader.cancel().catch(() => {});
+    };
+    signal.addEventListener("abort", onAbort);
+
+    let lastActiveTime = Date.now();
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastActiveTime > streamInactiveTimeoutSeconds * 1000) {
+        console.warn(`[Watchdog] Stream inactive for ${streamInactiveTimeoutSeconds}s, canceling reader...`);
+        clearInterval(watchdog);
+        reader.cancel().catch(() => {});
+      }
+    }, 5000);
+
+    // 性能优化：引入组件更新流的节流逻辑包装 onChunk 从而极大减轻 React 重绘导致的 CPU 飙高
+    let lastRenderTime = 0;
+    let pendingOnChunkArgs: [string, boolean] | null = null;
+    let renderTimer: any = null;
+
+    const throttleOnChunk = (text: string, isExtracting: boolean) => {
+      if (!onChunk) return;
+      const now = Date.now();
+      const interval = 60; // 60ms 节流阀周期
+
+      pendingOnChunkArgs = [text, isExtracting];
+
+      if (now - lastRenderTime >= interval) {
+        lastRenderTime = now;
+        onChunk(text, isExtracting);
+        if (renderTimer) {
+          clearTimeout(renderTimer);
+          renderTimer = null;
+        }
+      } else {
+        if (!renderTimer) {
+          renderTimer = setTimeout(() => {
+            if (pendingOnChunkArgs) {
+              lastRenderTime = Date.now();
+              onChunk(pendingOnChunkArgs[0], pendingOnChunkArgs[1]);
+              pendingOnChunkArgs = null;
+            }
+            renderTimer = null;
+          }, interval - (now - lastRenderTime));
+        }
+      }
+    };
+
+    try {
+      let shouldFinish = false;
+      while (true) {
+        if (shouldFinish) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        lastActiveTime = Date.now();
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+        for (const line of lines) {
+          if (line === "data: [DONE]") {
+            shouldFinish = true;
+            break;
+          }
+          if (line.startsWith("data: ") && line !== "data: [DONE]") {
+            try {
+              const data = JSON.parse(line.slice(6));
+              const deltaObj = data.choices[0]?.delta;
+              const reasoningChunk = deltaObj?.reasoning_content || deltaObj?.reasoning || deltaObj?.thought;
+              const contentChunk = deltaObj?.content;
+
+              if (reasoningChunk) {
+                if (!isNativeReasoning) {
+                  fullContent += "<think>\n";
+                  isNativeReasoning = true;
+                }
+                fullContent += reasoningChunk;
+              }
+
+              if (contentChunk) {
+                if (isNativeReasoning && !hasClosedNativeReasoning) {
+                  fullContent += "\n</think>\n";
+                  hasClosedNativeReasoning = true;
+                }
+                fullContent += contentChunk;
+              }
+
+              const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
+              if (onChunk) {
+                if (isInsideReasoning) {
+                  throttleOnChunk(fullContent, false);
+                } else {
+                  const cleaned = cleanStreamingJson(fullContent);
+                  const isExtracting = (fullContent.includes("<think>") && !fullContent.includes("</think>"))
+                    ? false
+                    : cleaned.length < fullContent.trim().length;
+                  throttleOnChunk(cleaned, isExtracting);
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err.name === "AbortError" || signal.aborted || err.message?.toLowerCase().includes("abort")) {
+        console.log("Stream reading aborted safely.");
+      } else {
+        throw err;
+      }
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      clearInterval(watchdog);
+      if (renderTimer) {
+        clearTimeout(renderTimer);
+      }
+      // 强制最终渲染以确保数据完整性
+      if (onChunk && pendingOnChunkArgs) {
+        onChunk(pendingOnChunkArgs[0], pendingOnChunkArgs[1]);
+      }
+    }
+
+    return fullContent;
+  } else {
+    const payload = await response.json();
+    if (payload.error) throw new Error(payload.error);
+    return typeof payload === "string" ? payload : (payload.content || JSON.stringify(payload));
+  }
 }

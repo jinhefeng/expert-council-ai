@@ -305,7 +305,7 @@ export function cleanStreamingJson(text: string): string {
     if (braceIdx === -1) break;
 
     const tailText = text.substring(braceIdx);
-    const hasKeywords = /stance|concern|recommendation|tradeoff/i.test(tailText);
+    const hasKeywords = /stance|concern|recommendation|tradeoff|consensus|disagreements|decisions|nextActions/i.test(tailText);
     const isJsonPattern = /^\{\s*["'\w\s]/i.test(tailText);
 
     if (hasKeywords && isJsonPattern) {
@@ -326,14 +326,18 @@ export function cleanStreamingJson(text: string): string {
 
   if (startIdx !== -1) {
     const remainingText = text.substring(startIdx);
-    const hasStanceKey = /"stance"|'stance'|stance\s*:/i.test(remainingText) ||
-                          /"concern"|'concern'|concern\s*:/i.test(remainingText) ||
-                          /"recommendation"|'recommendation'|recommendation\s*:/i.test(remainingText) ||
-                          /"tradeoff"|'tradeoff'|tradeoff\s*:/i.test(remainingText);
+    const hasKey = /"stance"|'stance'|stance\s*:/i.test(remainingText) ||
+                   /"concern"|'concern'|concern\s*:/i.test(remainingText) ||
+                   /"recommendation"|'recommendation'|recommendation\s*:/i.test(remainingText) ||
+                   /"tradeoff"|'tradeoff'|tradeoff\s*:/i.test(remainingText) ||
+                   /"consensus"|'consensus'|consensus\s*:/i.test(remainingText) ||
+                   /"disagreements"|'disagreements'|disagreements\s*:/i.test(remainingText) ||
+                   /"decisions"|'decisions'|decisions\s*:/i.test(remainingText) ||
+                   /"nextActions"|'nextActions'|nextActions\s*:/i.test(remainingText);
 
     const distToTrail = text.length - startIdx;
     // 命中指纹，或者虽未命中指纹但距离尾端极近（前置防抖，例如刚吐出 ```json ），立即裁剪阻断
-    if (hasStanceKey || distToTrail < 15) {
+    if (hasKey || distToTrail < 15) {
       return text.substring(0, startIdx).trim();
     }
   }
@@ -585,39 +589,213 @@ export function extractStreamingJsonKey(text: string, key: string): string {
     .replace(/\\\\/g, "\\");
 }
 
-/**
- * 判断正在吐流的残破 JSON 文本中，指定 key 的字符串值是否已经输出完毕并成功闭合。
- * 
- * @param text 正在吐流的原始文本（残损 JSON）
- * @param key 属性键名
- */
-export function isStreamingJsonKeyClosed(text: string, key: string): boolean {
-  if (!text) return false;
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("{")) {
-    return false;
-  }
-
-  const keyPattern = new RegExp(`["']${key}["']\\s*:\\s*["']`);
-  const match = trimmed.match(keyPattern);
-  if (!match) return false;
-
-  const startIdx = (match.index ?? 0) + match[0].length;
-  let escape = false;
-
-  for (let i = startIdx; i < trimmed.length; i++) {
-    const char = trimmed[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (char === "\\") {
-      escape = true;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      return true; // 找到了闭合的引号，说明该 key 已经读取完毕了
-    }
-  }
-  return false;
+export interface ModeratorSummary {
+  consensus: string[];
+  disagreements: string[];
+  decisions: string[];
+  nextActions: string[];
 }
+
+/**
+ * 主持人角色前缀物理清洗器
+ * 剥离大模型在主持人总结中自动添加的 【主持人】：、主持人：、【{name}】：等前缀自称
+ */
+export function stripModeratorPrefix(text: string, moderatorName?: string, moderatorTitle?: string): string {
+  if (!text) return "";
+  
+  // 性能优化：主持人前缀只可能出现在最开头。限制只在前 200 个字符内匹配，避免对超长累加流文本进行全量正则匹配导致 CPU 爆满
+  const limit = 200;
+  const head = text.substring(0, limit);
+  const tail = text.substring(limit);
+  
+  // 构建需要匹配的身份标识词列表（主持人 + 动态名称 + 头衔）
+  const identityTokens = ["主持人", "主持"];
+  if (moderatorName && !identityTokens.includes(moderatorName)) {
+    identityTokens.push(moderatorName);
+  }
+  if (moderatorTitle && !identityTokens.includes(moderatorTitle)) {
+    identityTokens.push(moderatorTitle);
+  }
+  
+  const escaped = identityTokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const identityAlt = escaped.join("|");
+  
+  // 匹配开头的角色前缀并剥离，如：【主持人】：、【平衡主持人】：、主持人：、主持人发言如下：
+  const prefixPattern = new RegExp(
+    `^[\\s\\n]*(?:【[^】]*(?:${identityAlt})[^】]*】|(?:${identityAlt}))[^：:\\n]{0,20}[：:][\\s\\n]*`,
+    "i"
+  );
+  
+  const cleanedHead = head.replace(prefixPattern, "");
+  return (cleanedHead + tail).trim();
+}
+
+/**
+ * 针对主持人流式/非流式输出的正文进行提取
+ * 格式与专家的 extractAndCleanJson 对齐，分离主 Markdown 文本与尾部包裹在 ```json 中的纪要
+ */
+export function extractAndCleanModeratorJson(rawText: string, moderatorName?: string, moderatorTitle?: string): {
+  content: string;
+  moderatorSummary: ModeratorSummary;
+} {
+  let text = rawText || "";
+  let thinkBlock = "";
+
+  // 提取并暂存 <think>...</think> 思维链
+  const thinkMatch = text.match(/<think>([\s\S]*?)(?:<\/think>|$)/i);
+  if (thinkMatch) {
+    thinkBlock = thinkMatch[0];
+    text = text.split(thinkBlock).join("");
+  }
+  text = text.trim();
+
+  // 剥离主持人自称前缀（如 【主持人】：、平衡主持人：等）
+  text = stripModeratorPrefix(text, moderatorName, moderatorTitle);
+
+  // 定位最后的 JSON 块
+  let jsonStartIdx = -1;
+  let searchPos = text.length;
+
+  while (true) {
+    if (searchPos <= 0) break;
+    const braceIdx = text.lastIndexOf("{", searchPos - 1);
+    if (braceIdx === -1) break;
+
+    const tailText = text.substring(braceIdx);
+    const hasKeywords = /consensus|disagreements|decisions|nextActions/i.test(tailText);
+    const isJsonPattern = /^\{\s*["'\w\s]/i.test(tailText);
+
+    if (hasKeywords && isJsonPattern) {
+      jsonStartIdx = braceIdx;
+      break;
+    }
+    searchPos = braceIdx;
+  }
+
+  let jsonString = "";
+  let jsonOriginalBlock = "";
+
+  if (jsonStartIdx !== -1) {
+    let braceCount = 0;
+    let jsonEndIdx = -1;
+    let inString = false;
+    let escape = false;
+
+    for (let i = jsonStartIdx; i < text.length; i++) {
+      const char = text[i];
+      if (char === '\\' && !escape) {
+        escape = true;
+        continue;
+      }
+      if (char === '"' && !escape) {
+        inString = !inString;
+      }
+      escape = false;
+      if (!inString) {
+        if (char === "{") braceCount++;
+        if (char === "}") {
+          braceCount--;
+          if (braceCount === 0) {
+            jsonEndIdx = i;
+            break;
+          }
+        }
+      }
+    }
+
+    if (jsonEndIdx !== -1) {
+      let finalStartIdx = jsonStartIdx;
+      let finalEndIdx = jsonEndIdx;
+
+      const prefixText = text.substring(0, jsonStartIdx);
+      const prefixMatch = prefixText.match(/```[a-zA-Z]*\s*$/);
+      if (prefixMatch) {
+        finalStartIdx = prefixText.length - prefixMatch[0].length;
+      }
+
+      const suffixText = text.substring(jsonEndIdx + 1);
+      const suffixMatch = suffixText.match(/^\s*```/);
+      if (suffixMatch) {
+        finalEndIdx = jsonEndIdx + 1 + suffixMatch[0].length - 1;
+      }
+
+      jsonOriginalBlock = text.substring(finalStartIdx, finalEndIdx + 1);
+      jsonString = text.substring(jsonStartIdx, jsonEndIdx + 1);
+    } else {
+      jsonOriginalBlock = text.substring(jsonStartIdx);
+      const prefixText = text.substring(0, jsonStartIdx);
+      const prefixMatch = prefixText.match(/```[a-zA-Z]*\s*$/);
+      if (prefixMatch) {
+        jsonOriginalBlock = text.substring(prefixText.length - prefixMatch[0].length);
+      }
+      jsonString = repairJson(text.substring(jsonStartIdx));
+    }
+  }
+
+  let consensus: string[] = [];
+  let disagreements: string[] = [];
+  let decisions: string[] = [];
+  let nextActions: string[] = [];
+  let summaryFallback = "";
+
+  if (jsonString) {
+    const parsed = cleanAndParseJson<any>(jsonString);
+    if (parsed) {
+      consensus = parsed.consensus || consensus;
+      disagreements = parsed.disagreements || disagreements;
+      decisions = parsed.decisions || decisions;
+      nextActions = parsed.nextActions || nextActions;
+      if (parsed.summary) {
+        summaryFallback = parsed.summary;
+      }
+    }
+
+    const idx = text.indexOf(jsonOriginalBlock);
+    if (idx !== -1) {
+      text = text.substring(0, idx);
+    }
+  }
+
+  text = text
+    .replace(/^```[a-zA-Z]*\s*/, "")
+    .replace(/```\s*$/, "")
+    .replace(/[\s\n\]\[`]+$/, "")
+    .trim();
+
+  let finalContent = thinkBlock ? `${thinkBlock}\n\n${text}`.trim() : text;
+
+  if (!text.trim() && summaryFallback) {
+    finalContent = thinkBlock ? `${thinkBlock}\n\n${summaryFallback}`.trim() : summaryFallback;
+  }
+
+  return {
+    content: finalContent,
+    moderatorSummary: { consensus, disagreements, decisions, nextActions }
+  };
+}
+
+/**
+ * 统一的思维链与正文内容提取工具
+ */
+export function parseThinkingContent(rawText: string): {
+  thinkingContent: string;
+  displayContent: string;
+  isThinkingDone: boolean;
+} {
+  const text = rawText || "";
+  let displayContent = text;
+  let thinkingContent = "";
+  let isThinkingDone = false;
+
+  const thinkMatch = text.match(/<think>([\s\S]*?)(?:<\/think>|$)/i);
+  if (thinkMatch) {
+    thinkingContent = thinkMatch[1].trim();
+    isThinkingDone = text.toLowerCase().includes("</think>");
+    displayContent = text.replace(thinkMatch[0], "").trim();
+  } else {
+    isThinkingDone = true;
+  }
+
+  return { thinkingContent, displayContent, isThinkingDone };
+}
+

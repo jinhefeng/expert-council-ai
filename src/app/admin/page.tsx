@@ -385,6 +385,10 @@ export default function AdminPage() {
     try {
       const item = JSON.parse(importDraft);
       if (item.id && item.name && item.provider && item.baseUrl && item.apiKey && item.model) {
+        if (item.isSystem || item.id.startsWith("system-")) {
+          alert("禁止导入或覆盖系统内置只读模型配置。");
+          return;
+        }
         let newConfigs = [...engineConfigs];
         const existingIdx = newConfigs.findIndex(c => c.id === item.id);
         if (existingIdx >= 0) {
@@ -410,7 +414,7 @@ export default function AdminPage() {
     const fullConfig = {
       version: "1.0",
       type: "agent-council-ai-full-config",
-      engineConfigs,
+      engineConfigs: engineConfigs.filter(c => !c.isSystem),
       systemOverrides,
       customExperts,
       userProfile,
@@ -438,7 +442,10 @@ export default function AdminPage() {
       }
       
       // 执行反序列化并保存
-      if (data.engineConfigs) await storage.saveEngineConfigs(TENANT_ID, data.engineConfigs);
+      if (data.engineConfigs) {
+        const customConfigs = data.engineConfigs.filter((c: any) => !c.isSystem && !(c.id && c.id.startsWith("system-")));
+        await storage.saveEngineConfigs(TENANT_ID, customConfigs);
+      }
       if (data.systemOverrides) await storage.saveSystemExpertsOverrides(TENANT_ID, data.systemOverrides);
       if (data.customExperts && Array.isArray(data.customExperts)) {
         for (const expert of data.customExperts) {
@@ -510,6 +517,8 @@ export default function AdminPage() {
         temperament: finalExpert.temperament,
         systemPrompt: finalExpert.systemPrompt,
         debateIntensity: finalExpert.debateIntensity,
+        modelMode: finalExpert.modelMode,
+        modelId: finalExpert.modelId,
       };
 
       if (existingIdx >= 0) {
@@ -1066,7 +1075,7 @@ export default function AdminPage() {
                   <input type="number" required value={llmParams.streamInactiveTimeoutSeconds ?? 30} onChange={e => setLlmParams({ ...llmParams, streamInactiveTimeoutSeconds: parseInt(e.target.value) })} />
                 </label>
                 <label className="compact-field">
-                  <span>外部专家首字响应超时 (秒)<CommonHelpButton title="外部专家首字响应超时" text="请求外部智能体发言时，等待第一个字流式返回的最大秒数，超时将自动跳过此智能体（默认90秒）。" onShowHelp={showCommonHelp} /></span>
+                  <span>专家首字响应/请求超时 (秒)<CommonHelpButton title="专家首字响应/请求超时" text="请求智能体专家发言时，等待首字流式返回或等待响应的最大秒数，超时将自动安全跳过此智能体。对内置和外部专家均生效（默认90秒）。" onShowHelp={showCommonHelp} /></span>
                   <input type="number" required value={llmParams.expertFirstCharTimeoutSeconds ?? 90} onChange={e => setLlmParams({ ...llmParams, expertFirstCharTimeoutSeconds: parseInt(e.target.value) })} />
                 </label>
                 <label className="compact-field">
@@ -1460,6 +1469,7 @@ export default function AdminPage() {
         initialData={expertDraft}
         onClose={() => setIsExpertModalOpen(false)}
         onSave={handleSaveExpert}
+        engineConfigs={engineConfigs}
       />
 
       {/* 全局确认 Modal */}
