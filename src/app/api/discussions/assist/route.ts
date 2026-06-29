@@ -1,4 +1,4 @@
-import { callLLM, getSystemEngine } from "@/lib/model-router";
+import { callLLM } from "@/lib/model-router";
 
 function cleanThinkText(text: string): string {
   if (!text) return "";
@@ -19,9 +19,9 @@ export async function POST(request: Request) {
       return Response.json({ error: "task and input are required" }, { status: 400 });
     }
 
-    const activeEngine = engineConfig || getSystemEngine();
+    const activeEngine = engineConfig;
     if (!activeEngine) {
-      return Response.json({ error: "No LLM engine available" }, { status: 500 });
+      return Response.json({ error: "未配置大模型引擎。请先在后台管理中配置并激活至少一个大模型。" }, { status: 400 });
     }
 
     let systemPrompt = "";

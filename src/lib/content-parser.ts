@@ -305,7 +305,7 @@ export function cleanStreamingJson(text: string): string {
     if (braceIdx === -1) break;
 
     const tailText = text.substring(braceIdx);
-    const hasKeywords = /stance|concern|recommendation|tradeoff/i.test(tailText);
+    const hasKeywords = /stance|concern|recommendation|tradeoff|consensus|disagreements|decisions|nextActions/i.test(tailText);
     const isJsonPattern = /^\{\s*["'\w\s]/i.test(tailText);
 
     if (hasKeywords && isJsonPattern) {
@@ -326,14 +326,18 @@ export function cleanStreamingJson(text: string): string {
 
   if (startIdx !== -1) {
     const remainingText = text.substring(startIdx);
-    const hasStanceKey = /"stance"|'stance'|stance\s*:/i.test(remainingText) ||
-                          /"concern"|'concern'|concern\s*:/i.test(remainingText) ||
-                          /"recommendation"|'recommendation'|recommendation\s*:/i.test(remainingText) ||
-                          /"tradeoff"|'tradeoff'|tradeoff\s*:/i.test(remainingText);
+    const hasKey = /"stance"|'stance'|stance\s*:/i.test(remainingText) ||
+                   /"concern"|'concern'|concern\s*:/i.test(remainingText) ||
+                   /"recommendation"|'recommendation'|recommendation\s*:/i.test(remainingText) ||
+                   /"tradeoff"|'tradeoff'|tradeoff\s*:/i.test(remainingText) ||
+                   /"consensus"|'consensus'|consensus\s*:/i.test(remainingText) ||
+                   /"disagreements"|'disagreements'|disagreements\s*:/i.test(remainingText) ||
+                   /"decisions"|'decisions'|decisions\s*:/i.test(remainingText) ||
+                   /"nextActions"|'nextActions'|nextActions\s*:/i.test(remainingText);
 
     const distToTrail = text.length - startIdx;
     // 命中指纹，或者虽未命中指纹但距离尾端极近（前置防抖，例如刚吐出 ```json ），立即裁剪阻断
-    if (hasStanceKey || distToTrail < 15) {
+    if (hasKey || distToTrail < 15) {
       return text.substring(0, startIdx).trim();
     }
   }
@@ -585,39 +589,150 @@ export function extractStreamingJsonKey(text: string, key: string): string {
     .replace(/\\\\/g, "\\");
 }
 
+export interface ModeratorSummary {
+  consensus: string[];
+  disagreements: string[];
+  decisions: string[];
+  nextActions: string[];
+}
+
 /**
- * 判断正在吐流的残破 JSON 文本中，指定 key 的字符串值是否已经输出完毕并成功闭合。
- * 
- * @param text 正在吐流的原始文本（残损 JSON）
- * @param key 属性键名
+ * 针对主持人流式/非流式输出的正文进行提取
+ * 格式与专家的 extractAndCleanJson 对齐，分离主 Markdown 文本与尾部包裹在 ```json 中的纪要
  */
-export function isStreamingJsonKeyClosed(text: string, key: string): boolean {
-  if (!text) return false;
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("{")) {
-    return false;
+export function extractAndCleanModeratorJson(rawText: string): {
+  content: string;
+  moderatorSummary: ModeratorSummary;
+} {
+  let text = rawText || "";
+  let thinkBlock = "";
+
+  // 提取并暂存 <think>...</think> 思维链
+  const thinkMatch = text.match(/<think>([\s\S]*?)(?:<\/think>|$)/i);
+  if (thinkMatch) {
+    thinkBlock = thinkMatch[0];
+    text = text.split(thinkBlock).join("");
+  }
+  text = text.trim();
+
+  // 定位最后的 JSON 块
+  let jsonStartIdx = -1;
+  let searchPos = text.length;
+
+  while (true) {
+    if (searchPos <= 0) break;
+    const braceIdx = text.lastIndexOf("{", searchPos - 1);
+    if (braceIdx === -1) break;
+
+    const tailText = text.substring(braceIdx);
+    const hasKeywords = /consensus|disagreements|decisions|nextActions/i.test(tailText);
+    const isJsonPattern = /^\{\s*["'\w\s]/i.test(tailText);
+
+    if (hasKeywords && isJsonPattern) {
+      jsonStartIdx = braceIdx;
+      break;
+    }
+    searchPos = braceIdx;
   }
 
-  const keyPattern = new RegExp(`["']${key}["']\\s*:\\s*["']`);
-  const match = trimmed.match(keyPattern);
-  if (!match) return false;
+  let jsonString = "";
+  let jsonOriginalBlock = "";
 
-  const startIdx = (match.index ?? 0) + match[0].length;
-  let escape = false;
+  if (jsonStartIdx !== -1) {
+    let braceCount = 0;
+    let jsonEndIdx = -1;
+    let inString = false;
+    let escape = false;
 
-  for (let i = startIdx; i < trimmed.length; i++) {
-    const char = trimmed[i];
-    if (escape) {
+    for (let i = jsonStartIdx; i < text.length; i++) {
+      const char = text[i];
+      if (char === '\\' && !escape) {
+        escape = true;
+        continue;
+      }
+      if (char === '"' && !escape) {
+        inString = !inString;
+      }
       escape = false;
-      continue;
+      if (!inString) {
+        if (char === "{") braceCount++;
+        if (char === "}") {
+          braceCount--;
+          if (braceCount === 0) {
+            jsonEndIdx = i;
+            break;
+          }
+        }
+      }
     }
-    if (char === "\\") {
-      escape = true;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      return true; // 找到了闭合的引号，说明该 key 已经读取完毕了
+
+    if (jsonEndIdx !== -1) {
+      let finalStartIdx = jsonStartIdx;
+      let finalEndIdx = jsonEndIdx;
+
+      const prefixText = text.substring(0, jsonStartIdx);
+      const prefixMatch = prefixText.match(/```[a-zA-Z]*\s*$/);
+      if (prefixMatch) {
+        finalStartIdx = prefixText.length - prefixMatch[0].length;
+      }
+
+      const suffixText = text.substring(jsonEndIdx + 1);
+      const suffixMatch = suffixText.match(/^\s*```/);
+      if (suffixMatch) {
+        finalEndIdx = jsonEndIdx + 1 + suffixMatch[0].length - 1;
+      }
+
+      jsonOriginalBlock = text.substring(finalStartIdx, finalEndIdx + 1);
+      jsonString = text.substring(jsonStartIdx, jsonEndIdx + 1);
+    } else {
+      jsonOriginalBlock = text.substring(jsonStartIdx);
+      const prefixText = text.substring(0, jsonStartIdx);
+      const prefixMatch = prefixText.match(/```[a-zA-Z]*\s*$/);
+      if (prefixMatch) {
+        jsonOriginalBlock = text.substring(prefixText.length - prefixMatch[0].length);
+      }
+      jsonString = repairJson(text.substring(jsonStartIdx));
     }
   }
-  return false;
+
+  let consensus: string[] = [];
+  let disagreements: string[] = [];
+  let decisions: string[] = [];
+  let nextActions: string[] = [];
+  let summaryFallback = "";
+
+  if (jsonString) {
+    const parsed = cleanAndParseJson<any>(jsonString);
+    if (parsed) {
+      consensus = parsed.consensus || consensus;
+      disagreements = parsed.disagreements || disagreements;
+      decisions = parsed.decisions || decisions;
+      nextActions = parsed.nextActions || nextActions;
+      if (parsed.summary) {
+        summaryFallback = parsed.summary;
+      }
+    }
+
+    const idx = text.indexOf(jsonOriginalBlock);
+    if (idx !== -1) {
+      text = text.substring(0, idx);
+    }
+  }
+
+  text = text
+    .replace(/^```[a-zA-Z]*\s*/, "")
+    .replace(/```\s*$/, "")
+    .replace(/[\s\n\]\[`]+$/, "")
+    .trim();
+
+  let finalContent = thinkBlock ? `${thinkBlock}\n\n${text}`.trim() : text;
+
+  if (!text.trim() && summaryFallback) {
+    finalContent = thinkBlock ? `${thinkBlock}\n\n${summaryFallback}`.trim() : summaryFallback;
+  }
+
+  return {
+    content: finalContent,
+    moderatorSummary: { consensus, disagreements, decisions, nextActions }
+  };
 }

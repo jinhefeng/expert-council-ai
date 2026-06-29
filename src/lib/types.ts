@@ -33,6 +33,10 @@ export type Expert = TenantScoped & {
   ragEndpoint?: string;     // 外部 RAG 接口地址
   ragToken?: string;        // 外部 RAG API 鉴权 Token
   ragDatasetId?: string;    // 目标知识库/数据集 ID (Collection ID)
+
+  // 大模型路由配置
+  modelMode?: "default" | "custom"; // 路由模式: "default" (跟随会议室) | "custom" (指定独立大模型)
+  modelId?: string;                 // 独立大模型 ID (LLMEngineConfig.id)，当 modelMode 为 "custom" 时有效
 };
 
 export type LLMEngineConfig = TenantScoped & {

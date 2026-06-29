@@ -18,7 +18,7 @@ import { experts as defaultExperts, moderatorModes, mergeSystemExperts } from "@
 import { ExpertModal } from "@/components/ExpertModal";
 import ChatMessageCard from "@/components/ChatMessageCard";
 import { LocalStorageService } from "@/lib/storage-service";
-import { extractAndCleanJson, cleanStreamingJson, cleanAndParseJson, beautifyListFormatting, extractInquiryPrompt } from "@/lib/content-parser";
+import { extractAndCleanJson, cleanStreamingJson, cleanAndParseJson, beautifyListFormatting, extractInquiryPrompt, extractAndCleanModeratorJson } from "@/lib/content-parser";
 import {
   Expert,
   LLMEngineConfig,
@@ -106,8 +106,8 @@ export default function Home() {
   const [systemPrompts, setSystemPrompts] = useState<SystemPromptsConfig | null>(null);
   const [businessDefaults, setBusinessDefaults] = useState<BusinessDefaultsConfig | null>(null);
   
-  // 活动的模型引擎 ID：真刀真枪下默认使用系统环境内置的 system-env
-  const [activeEngineId, setActiveEngineId] = useState<string>("system-env");
+  // 活动的模型引擎 ID
+  const [activeEngineId, setActiveEngineId] = useState<string>("");
 
   // 前端辅助交互状态
   const [question, setQuestion] = useState("");
@@ -280,12 +280,11 @@ export default function Home() {
       setBusinessDefaults(loadedBusinessDefaults);
 
       // 决定默认的模型引擎选择
-      const activeConfig = loadedConfigs.find(c => c.isActive);
+      const activeConfig = loadedConfigs.find(c => c.isActive) || loadedConfigs[0];
       if (activeConfig) {
         setActiveEngineId(activeConfig.id);
       } else {
-        // 若没有自定义的，强制走系统环境内置大模型
-        setActiveEngineId("system-env");
+        setActiveEngineId("");
       }
 
       // 从 localStorage 加载面板折叠状态
@@ -749,8 +748,8 @@ export default function Home() {
   // 是否缺失 API 密钥（在真实模式下，且没有自定义引擎，且假设用户没有在本地配 .env）
   // 此时我们在 UI 上输出友好提示，防止大模型请求报错
   const showKeyWarning = useMemo(() => {
-    return activeEngineId === "system-env" && engineConfigs.length === 0;
-  }, [activeEngineId, engineConfigs]);
+    return engineConfigs.length === 0;
+  }, [engineConfigs]);
 
   // 更新当前会议属性并保存
   async function updateActiveMeeting(fields: Partial<Meeting>) {
@@ -951,7 +950,7 @@ export default function Home() {
     await storage.saveEngineConfigs(TENANT_ID, nextConfigs);
 
     if (activeEngineId === id) {
-      setActiveEngineId("system-env");
+      setActiveEngineId(nextConfigs[0]?.id || "");
     }
   }
 
@@ -1075,8 +1074,8 @@ export default function Home() {
     contextStr: string,
     history: ChatMessage[],
     signal: AbortSignal,
-    onChunk?: (text: string, isExtracting?: boolean) => void
-  ) {
+    onChunk?: (text: string, isExtracting: boolean) => void
+  ): Promise<{ content: string; expertStance: any }> {
     if (expert.isExternalAgent) {
       if (botStatuses[expert.id] !== "online") {
         return Promise.reject(new Error(`智能体专家 [${expert.name}] 当前处于离线状态，无法发言。请确保其成功连接中继网关。`));
@@ -1123,7 +1122,7 @@ export default function Home() {
           }
           resetKeepAliveTimeout(); // 刷新 45 秒断流超时
           if (onChunk) {
-            onChunk(text, isExtracting);
+            onChunk(text, isExtracting || false);
           }
         };
 
@@ -1177,122 +1176,47 @@ export default function Home() {
       });
     }
 
-    const response = await fetch("/api/discussions/expert-turn", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question: userQuestion,
-        projectContext: contextStr,
-        expert,
-        previousTurns,
-        globalDebateIntensity: meeting.globalDebateIntensity,
-        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
-        conversationHistory: history,
-        llmParams,
-        systemPrompts,
-        userProfile,
-        meetingName: meeting.name,
-        meetingDesc: meeting.description,
-      }),
+
+    // 确定会议室默认引擎配置
+    const meetingEngineConfig = activeEngineConfig;
+
+    // 动态路由专家的大模型配置
+    let targetEngineConfig = meetingEngineConfig;
+    if (expert.modelMode === "custom" && expert.modelId) {
+      const matched = engineConfigs.find(c => c.id === expert.modelId);
+      if (matched) {
+        targetEngineConfig = matched;
+      } else {
+        console.warn(`[ModelRouter] 专家 [${expert.name}] 指定的大模型配置 ID "${expert.modelId}" 不存在。已自动退回到会议室默认模型 [${activeEngineConfig?.name || "未配置模型"}].`);
+      }
+    }
+
+    const body = {
+      question: userQuestion,
+      projectContext: contextStr,
+      expert,
+      previousTurns,
+      globalDebateIntensity: meeting.globalDebateIntensity,
+      engineConfig: targetEngineConfig,
+      conversationHistory: history,
+      llmParams,
+      systemPrompts,
+      userProfile,
+      meetingName: meeting.name,
+      meetingDesc: meeting.description,
+    };
+
+    const fullContent = await requestStreamingTurn({
+      endpoint: "/api/discussions/expert-turn",
+      body,
       signal,
+      streamInactiveTimeoutSeconds: llmParams?.streamInactiveTimeoutSeconds ?? 30,
+      onChunk,
+      errorMsgFallback: "大模型在生成智能体观点时失败。"
     });
 
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || "大模型在生成智能体观点时失败。");
-    }
-
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("text/event-stream")) {
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let fullContent = "";
-      if (!reader) throw new Error("No reader");
-      
-      let isNativeReasoning = false;
-      let hasClosedNativeReasoning = false;
-      
-      const onAbort = () => {
-        reader.cancel().catch(() => {});
-      };
-      signal.addEventListener("abort", onAbort);
-
-      let lastActiveTime = Date.now();
-      const inactiveTimeoutSeconds = llmParams?.streamInactiveTimeoutSeconds ?? 30;
-      const watchdog = setInterval(() => {
-        if (Date.now() - lastActiveTime > inactiveTimeoutSeconds * 1000) {
-          console.warn(`[Watchdog] Expert turn stream inactive for ${inactiveTimeoutSeconds}s, canceling reader...`);
-          clearInterval(watchdog);
-          reader.cancel().catch(() => {});
-        }
-      }, 5000);
-
-      try {
-        let shouldFinish = false;
-        while (true) {
-          if (shouldFinish) break;
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          lastActiveTime = Date.now();
-          
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n");
-          for (const line of lines) {
-            if (line === "data: [DONE]") {
-              shouldFinish = true;
-              break;
-            }
-            if (line.startsWith("data: ") && line !== "data: [DONE]") {
-              try {
-                const data = JSON.parse(line.slice(6));
-                const deltaObj = data.choices[0]?.delta;
-                const reasoningChunk = deltaObj?.reasoning_content || deltaObj?.reasoning || deltaObj?.thought;
-                const contentChunk = deltaObj?.content;
-
-                if (reasoningChunk) {
-                   if (!isNativeReasoning) {
-                     fullContent += "<think>\n";
-                     isNativeReasoning = true;
-                   }
-                   fullContent += reasoningChunk;
-                }
-
-                if (contentChunk) {
-                  if (isNativeReasoning && !hasClosedNativeReasoning) {
-                    fullContent += "\n</think>\n";
-                    hasClosedNativeReasoning = true;
-                  }
-                  fullContent += contentChunk;
-                }
-
-                const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
-                if (onChunk) {
-                  if (isInsideReasoning) {
-                    onChunk(fullContent, false);
-                  } else {
-                    const cleaned = cleanStreamingJson(fullContent);
-                    const isExtracting = (fullContent.includes("<think>") && !fullContent.includes("</think>"))
-                      ? false
-                      : cleaned.length < fullContent.trim().length;
-                    onChunk(cleaned, isExtracting);
-                  }
-                }
-              } catch (e) {}
-            }
-          }
-        }
-      } finally {
-        signal.removeEventListener("abort", onAbort);
-        clearInterval(watchdog);
-      }
-      
-      return extractAndCleanJson(fullContent, expert.name, expert.title);
-    } else {
-      return response.json();
-    }
+    return extractAndCleanJson(fullContent, expert.name, expert.title);
   }
-
   // 智能相关度下一发言人决策
   async function requestNextSpeakerId(
     userQuestion: string,
@@ -1301,27 +1225,37 @@ export default function Home() {
     history: ChatMessage[],
     signal: AbortSignal
   ): Promise<string> {
-    const response = await fetch("/api/discussions/next-speaker", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question: userQuestion,
-        previousTurns,
-        candidateExperts,
-        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
-        conversationHistory: history,
-        llmParams,
-        systemPrompts,
-      }),
-      signal,
-    });
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => timeoutController.abort(), 6000); // 6秒超时
 
-    if (!response.ok) {
+    try {
+      const response = await fetch("/api/discussions/next-speaker", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: userQuestion,
+          previousTurns,
+          candidateExperts,
+          engineConfig: activeEngineConfig,
+          conversationHistory: history,
+          llmParams,
+          systemPrompts,
+        }),
+        signal: timeoutController.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        return candidateExperts[0].id;
+      }
+
+      const payload = await response.json();
+      return payload.nextSpeakerId || candidateExperts[0].id;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      console.warn("[ModelRouter] 智能指派接口异常或已超时(6s)，自动降级为首个专家顺序指派:", e);
       return candidateExperts[0].id;
     }
-
-    const payload = await response.json();
-    return payload.nextSpeakerId || candidateExperts[0].id;
   }
 
   // 主持人决策总结
@@ -1332,142 +1266,51 @@ export default function Home() {
     contextStr: string,
     history: ChatMessage[],
     signal: AbortSignal,
-    onChunk?: (text: string) => void
+    onChunk?: (text: string, isExtracting: boolean) => void
   ) {
-    const response = await fetch("/api/discussions/synthesis", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question: userQuestion,
-        projectContext: contextStr,
-        expertRounds,
-        moderatorId: meeting.moderatorId,
-        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
-        conversationHistory: history,
-        llmParams,
-        systemPrompts,
-        userProfile,
-      }),
+    const activeEngine = activeEngineConfig;
+    const body = {
+      question: userQuestion,
+      projectContext: contextStr,
+      expertRounds,
+      moderatorId: meeting.moderatorId || "balanced",
+      engineConfig: activeEngine,
+      conversationHistory: history,
+      llmParams,
+      systemPrompts,
+      userProfile,
+    };
+
+    const fullContent = await requestStreamingTurn({
+      endpoint: "/api/discussions/synthesis",
+      body,
       signal,
+      streamInactiveTimeoutSeconds: llmParams?.streamInactiveTimeoutSeconds ?? 30,
+      onChunk,
+      errorMsgFallback: "主持人提炼纪要时失败。"
     });
 
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || "主持人总结处理失败。");
-    }
-
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("text/event-stream")) {
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let fullContent = "";
-      if (!reader) throw new Error("No reader");
-
-      let isNativeReasoning = false;
-      let hasClosedNativeReasoning = false;
-
-      const onAbort = () => {
-        reader.cancel().catch(() => {});
-      };
-      signal.addEventListener("abort", onAbort);
-
-      let lastActiveTime = Date.now();
-      const inactiveTimeoutSeconds = llmParams?.streamInactiveTimeoutSeconds ?? 30;
-      const watchdog = setInterval(() => {
-        if (Date.now() - lastActiveTime > inactiveTimeoutSeconds * 1000) {
-          console.warn(`[Watchdog] Synthesis stream inactive for ${inactiveTimeoutSeconds}s, canceling reader...`);
-          clearInterval(watchdog);
-          reader.cancel().catch(() => {});
-        }
-      }, 5000);
-
-      try {
-        let shouldFinish = false;
-        while (true) {
-          if (shouldFinish) break;
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          lastActiveTime = Date.now();
-          
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n");
-          for (const line of lines) {
-            if (line === "data: [DONE]") {
-              shouldFinish = true;
-              break;
-            }
-            if (line.startsWith("data: ") && line !== "data: [DONE]") {
-              try {
-                const data = JSON.parse(line.slice(6));
-                const reasoningChunk = data.choices[0]?.delta?.reasoning_content;
-                const contentChunk = data.choices[0]?.delta?.content;
-
-                if (reasoningChunk) {
-                  if (!isNativeReasoning) {
-                    fullContent += "<think>\n";
-                    isNativeReasoning = true;
-                  }
-                  fullContent += reasoningChunk;
-                }
-
-                if (contentChunk) {
-                  if (isNativeReasoning && !hasClosedNativeReasoning) {
-                    fullContent += "\n</think>\n";
-                    hasClosedNativeReasoning = true;
-                  }
-                  fullContent += contentChunk;
-                }
-
-                const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
-                if (onChunk) {
-                  if (isInsideReasoning) {
-                    onChunk(fullContent);
-                  } else {
-                    onChunk(cleanStreamingJson(fullContent));
-                  }
-                }
-              } catch (e) {}
-            }
-          }
-        }
-      } catch (err: any) {
-        if (err.name === "AbortError" || signal.aborted || err.message?.toLowerCase().includes("abort")) {
-          console.log("Synthesis stream reading aborted safely.");
-        } else {
-          throw err;
-        }
-      } finally {
-        signal.removeEventListener("abort", onAbort);
-        clearInterval(watchdog);
-      }
-
-      try {
-        const firstBrace = fullContent.indexOf("{");
-        const lastBrace = fullContent.lastIndexOf("}");
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-          const jsonString = fullContent.substring(firstBrace, lastBrace + 1);
-          const parsed = cleanAndParseJson<any>(jsonString);
-          if (parsed && typeof parsed === "object" && "summary" in parsed) {
-            return parsed;
-          }
-        }
-      } catch (e) {
-        console.error("Failed to parse streaming synthesis JSON", fullContent, e);
-      }
-
+    try {
+      const parsedRes = extractAndCleanModeratorJson(fullContent);
       return {
-        summary: fullContent,
-        consensus: ["已记录在总结中"],
-        disagreements: ["参见上述文本"],
-        decisions: ["见总结详情"],
-        nextActions: ["立即推进相关决策评估"],
+        summary: parsedRes.content,
+        consensus: parsedRes.moderatorSummary.consensus,
+        disagreements: parsedRes.moderatorSummary.disagreements,
+        decisions: parsedRes.moderatorSummary.decisions,
+        nextActions: parsedRes.moderatorSummary.nextActions,
       };
-    } else {
-      return response.json();
+    } catch (e) {
+      console.error("Failed to parse streaming synthesis JSON", fullContent, e);
     }
-  }
 
+    return {
+      summary: fullContent,
+      consensus: ["已记录在总结中"],
+      disagreements: ["参见上述文本"],
+      decisions: ["见总结详情"],
+      nextActions: ["立即推进相关决策评估"],
+    };
+  }
   // 调用 AI 判定是否需要追问补充信息
   async function requestInquiryCheck(
     meetingId: string,
@@ -1483,7 +1326,7 @@ export default function Home() {
         question: userQuestion,
         projectContext: contextStr,
         conversationHistory: history,
-        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
+        engineConfig: activeEngineConfig,
         llmParams,
         systemPrompts,
       }),
@@ -1518,7 +1361,7 @@ export default function Home() {
         projectContext: contextStr,
         conversationHistory: history,
         synthesisSummary,
-        engineConfig: activeEngineId === "system-env" ? undefined : activeEngineConfig,
+        engineConfig: activeEngineConfig,
         llmParams: safeLlmParams,
         systemPrompts: safeSystemPrompts,
       }),
@@ -1583,6 +1426,12 @@ export default function Home() {
     if (!userQuestion) return;
 
     setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
+    if (!activeEngineConfig) {
+      alert("⚠️ 当前系统未配置或激活任何大模型引擎，请前往“后台管理 · 模型管理”添加并激活您的大模型配置以启动圆桌讨论！");
+      setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+      return;
+    }
+
     if (!editParams) {
       setQuestion("");
       setSources([]);
@@ -1689,8 +1538,12 @@ export default function Home() {
           contextStr, 
           conversationHistory, 
           signal,
-          (text) => {
-            modMessage = { ...modMessage, content: text };
+          (text, isExtracting) => {
+            modMessage = { 
+              ...modMessage, 
+              content: text,
+              isStanceExtracting: isExtracting || false
+            };
             setMeetings((prev) =>
               prev.map((m) => {
                 if (m.id !== targetMeetingId) return m;
@@ -1703,23 +1556,43 @@ export default function Home() {
           }
         );
         
+        // 流式读取完成，大模型开始 done。为了给用户提供提炼 Loading 的平滑过渡视觉，我们先保持 Loading 状态
         modMessage = {
           ...modMessage,
           content: synth.summary,
-          moderatorSummary: {
-            consensus: synth.consensus || [],
-            disagreements: synth.disagreements || [],
-            decisions: synth.decisions || [],
-            nextActions: synth.nextActions || [],
-          },
+          isStanceExtracting: true,
         };
+        setMeetings((prev) =>
+          prev.map((m) => {
+            if (m.id !== targetMeetingId) return m;
+            const updatedMessages = m.messages.map((msg) =>
+              msg.id === modMessageId ? modMessage : msg
+            );
+            return { ...m, messages: updatedMessages };
+          })
+        );
 
-        const finalMessages = currentMeeting.messages.map(msg => msg.id === modMessageId ? modMessage : msg);
-        await saveCurrentMeetingState({ ...currentMeeting, messages: finalMessages });
-        
-        setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
-        setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
-        return;
+        setTimeout(async () => {
+          modMessage = {
+            ...modMessage,
+            moderatorSummary: {
+              consensus: synth.consensus || [],
+              disagreements: synth.disagreements || [],
+              decisions: synth.decisions || [],
+              nextActions: synth.nextActions || [],
+            },
+            isStanceExtracting: false, // 提炼结束，展示卡片
+          };
+
+          const finalMessages = currentMeeting.messages.map(msg => msg.id === modMessageId ? modMessage : msg);
+          const updatedMeeting = { ...currentMeeting, messages: finalMessages };
+          
+          setMeetings(prev => prev.map(m => m.id === targetMeetingId ? updatedMeeting : m));
+          await saveCurrentMeetingState(updatedMeeting);
+          
+          setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+          setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+        }, 800);
       }
 
       // 如果是“手动点名”模式，只生成一个占位消息，提示用户点名，不自动流转队列
@@ -1982,8 +1855,12 @@ export default function Home() {
           activeContext,
           conversationHistory,
           signal,
-          (text) => {
-            modMessage = { ...modMessage, content: text };
+          (text, isExtracting) => {
+            modMessage = { 
+              ...modMessage, 
+              content: text,
+              isStanceExtracting: isExtracting || false
+            };
             setMeetings((prev) =>
               prev.map((m) => {
                 if (m.id !== targetMeetingId) return m;
@@ -1996,31 +1873,52 @@ export default function Home() {
           }
         );
 
+        // 流式读取完成，大模型开始 done。为了给用户提供提炼 Loading 的平滑过渡视觉，我们先保持 Loading 状态
         modMessage = {
           ...modMessage,
           content: synth.summary,
-          moderatorSummary: {
-            consensus: synth.consensus || [],
-            disagreements: synth.disagreements || [],
-            decisions: synth.decisions || [],
-            nextActions: synth.nextActions || [],
-          },
+          isStanceExtracting: true,
         };
+        setMeetings((prev) =>
+          prev.map((m) => {
+            if (m.id !== targetMeetingId) return m;
+            const updatedMessages = m.messages.map((msg) =>
+              msg.id === modMessageId ? modMessage : msg
+            );
+            return { ...m, messages: updatedMessages };
+          })
+        );
 
-        if (synth.decisions && Array.isArray(synth.decisions)) {
-          synth.decisions.forEach((d: string) => {
-            if (d && !discussionDecisions.includes(d)) {
-              discussionDecisions.push(d);
-            }
-          });
-        }
+        setTimeout(async () => {
+          modMessage = {
+            ...modMessage,
+            moderatorSummary: {
+              consensus: synth.consensus || [],
+              disagreements: synth.disagreements || [],
+              decisions: synth.decisions || [],
+              nextActions: synth.nextActions || [],
+            },
+            isStanceExtracting: false, // 提炼结束，展示卡片
+          };
 
-        nextMsgs = currentMeeting.messages.map(msg => msg.id === modMessageId ? modMessage : msg);
-        await saveCurrentMeetingState({ ...currentMeeting, messages: nextMsgs });
+          if (synth.decisions && Array.isArray(synth.decisions)) {
+            synth.decisions.forEach((d) => {
+              if (d && !discussionDecisions.includes(d)) {
+                discussionDecisions.push(d);
+              }
+            });
+          }
 
-        setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+          let finalMessages = currentMeeting.messages.map(msg => 
+            msg.id === modMessageId ? modMessage : msg
+          );
+          const updatedMeeting = { ...currentMeeting, messages: finalMessages };
+          
+          setMeetings(prev => prev.map(m => m.id === targetMeetingId ? updatedMeeting : m));
+          await saveCurrentMeetingState(updatedMeeting);
 
-        // ================= 后置：决策提取与状态机抉择分流 =================
+          setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+        }, 800);
         // 同步最新的配置属性
         const latestPostM = meetingsRef.current.find(m => m.id === targetMeetingId) || currentMeeting;
         currentMeeting.moderatorAutonomy = latestPostM.moderatorAutonomy;
@@ -2203,6 +2101,7 @@ export default function Home() {
       setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
       setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: null }));
       setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: false }));
+      setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: false }));
       delete discussAbortControllersRef.current[targetMeetingId];
     }
   }
@@ -2211,6 +2110,11 @@ export default function Home() {
   async function handleCallExpertDirectly(expert: Expert) {
     if (!activeMeeting || discussingMeetings[activeMeetingId] || generatingConclusions[activeMeetingId]) return;
     
+    if (!activeEngineConfig) {
+      alert("⚠️ 当前系统未配置或激活任何大模型引擎，请前往“后台管理 · 模型管理”添加并激活您的大模型配置以手动点名发言！");
+      return;
+    }
+
     const targetMeetingId = activeMeeting.id;
     setDiscussingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
     setSpeakingExpertIds(prev => ({ ...prev, [targetMeetingId]: expert.id }));
@@ -2381,6 +2285,11 @@ export default function Home() {
     if (!targetMeeting || !Array.isArray(targetMeeting.messages) || targetMeeting.messages.length === 0 || generatingConclusions[targetMeeting.id]) return;
     
     const targetMeetingId = targetMeeting.id;
+    if (!activeEngineConfig) {
+      alert("⚠️ 当前系统未配置或激活任何大模型引擎，请前往“后台管理 · 模型管理”添加并激活您的大模型配置以提炼最终结论！");
+      setGeneratingConclusions(prev => ({ ...prev, [targetMeetingId]: false }));
+      return;
+    }
     setGeneratingConclusions(prev => ({ ...prev, [targetMeetingId]: true }));
     
     // 立即跳转/平滑滚动到页面最底部的“正在生成的控制按钮”处
@@ -2583,7 +2492,7 @@ export default function Home() {
             <span className="status-chip">{meetings.length} 场会议</span>
             <span className="status-chip">{customExperts.length} 自定义智能体</span>
             <span className="status-chip">
-              {activeEngineId === "system-env" ? "系统环境模型" : activeEngineConfig?.name || "未知引擎"}
+              {activeEngineConfig?.name || "未配置大模型"}
             </span>
             <a href="/manual.html" target="_blank" className="ghost-button" style={{ display: "inline-flex", alignItems: "center", minHeight: "30px", padding: "0 12px", textDecoration: "none", borderRadius: "999px", fontSize: "12px", border: "1px solid var(--line)", background: "var(--surface)", marginRight: "8px" }}>
               💡 使用说明
@@ -2798,6 +2707,27 @@ export default function Home() {
                             />
                             <span>{expert.debateIntensity}</span>
                           </label>
+                          {!expert.isExternalAgent && expert.modelMode === "custom" && expert.modelId && (() => {
+                            const matched = engineConfigs.find(c => c.id === expert.modelId);
+                            const modelName = matched ? matched.name : "未知模型 (已删除)";
+                            return (
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "6px", fontSize: "11px" }}>
+                                <span style={{ color: "var(--muted)" }}>模型引擎</span>
+                                <span style={{ 
+                                  fontWeight: 500, 
+                                  color: "var(--amber)",
+                                  background: "rgba(245, 158, 11, 0.05)",
+                                  padding: "2px 6px",
+                                  borderRadius: "4px",
+                                  border: "1px solid var(--amber-soft)",
+                                  fontSize: "10px",
+                                  lineHeight: 1
+                                }}>
+                                  {modelName}
+                                </span>
+                              </div>
+                            );
+                          })()}
                         </div>
 
                         {/* 主持人点名模式：如果专家参会了，且非发言状态，显示点名发言按钮 */}
@@ -2911,7 +2841,7 @@ export default function Home() {
           {/* 真实模式下，若未配大模型引擎，展示全局警告条并引导 */}
           {showKeyWarning && (
             <div className="note-message" style={{ borderLeft: "4px solid var(--amber)", borderRadius: "4px", margin: "14px 18px 0", background: "var(--amber-soft)", color: "#684c08" }}>
-              <strong>⚠️ 当前为【真枪实弹运行模式】</strong>：若您在本地的 `.env.local` 配置文件中配置了 `DASHSCOPE_API_KEY` 或 `OPENAI_API_KEY`，可直接选用【系统默认大模型】启动；若未配置，请点击右侧【自定义大模型服务】输入您的 API 密钥，否则圆桌会议发送提问时将会报错。
+              <strong>⚠️ 尚未配置任何大模型引擎</strong>：请前往“后台管理 · 模型管理”添加并激活您的 API 大模型引擎配置，否则圆桌会议将无法正常发起对话。
             </div>
           )}
 
@@ -3673,7 +3603,9 @@ export default function Home() {
                           title="选择模型引擎"
                           style={{ cursor: isControlsDisabled ? "not-allowed" : "pointer", opacity: isControlsDisabled ? 0.5 : 1 }}
                         >
-                          <option value="system-env">系统内置</option>
+                          {engineConfigs.length === 0 && (
+                            <option value="">未配置大模型</option>
+                          )}
                           {engineConfigs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
                       </div>
@@ -3749,6 +3681,7 @@ export default function Home() {
           onSave={handleSaveCustomExpert}
           initialData={customModalDraft}
           meetingContext={activeMeeting ? { name: activeMeeting.name, description: activeMeeting.description } : undefined}
+          engineConfigs={engineConfigs}
         />
 
         {/* 新建/编辑会议 Modal */}
@@ -3963,4 +3896,131 @@ export default function Home() {
       </main>
     </main>
   );
+}
+
+interface StreamingTurnOptions {
+  endpoint: string;
+  body: any;
+  signal: AbortSignal;
+  streamInactiveTimeoutSeconds?: number;
+  onChunk?: (text: string, isExtracting: boolean) => void;
+  errorMsgFallback: string;
+}
+
+async function requestStreamingTurn({
+  endpoint,
+  body,
+  signal,
+  streamInactiveTimeoutSeconds = 30,
+  onChunk,
+  errorMsgFallback
+}: StreamingTurnOptions): Promise<string> {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || errorMsgFallback);
+  }
+
+  const contentType = response.headers.get("content-type");
+  if (contentType && contentType.includes("text/event-stream")) {
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let fullContent = "";
+    if (!reader) throw new Error("No reader");
+
+    let isNativeReasoning = false;
+    let hasClosedNativeReasoning = false;
+
+    const onAbort = () => {
+      reader.cancel().catch(() => {});
+    };
+    signal.addEventListener("abort", onAbort);
+
+    let lastActiveTime = Date.now();
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastActiveTime > streamInactiveTimeoutSeconds * 1000) {
+        console.warn(`[Watchdog] Stream inactive for ${streamInactiveTimeoutSeconds}s, canceling reader...`);
+        clearInterval(watchdog);
+        reader.cancel().catch(() => {});
+      }
+    }, 5000);
+
+    try {
+      let shouldFinish = false;
+      while (true) {
+        if (shouldFinish) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        lastActiveTime = Date.now();
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+        for (const line of lines) {
+          if (line === "data: [DONE]") {
+            shouldFinish = true;
+            break;
+          }
+          if (line.startsWith("data: ") && line !== "data: [DONE]") {
+            try {
+              const data = JSON.parse(line.slice(6));
+              const deltaObj = data.choices[0]?.delta;
+              const reasoningChunk = deltaObj?.reasoning_content || deltaObj?.reasoning || deltaObj?.thought;
+              const contentChunk = deltaObj?.content;
+
+              if (reasoningChunk) {
+                if (!isNativeReasoning) {
+                  fullContent += "<think>\n";
+                  isNativeReasoning = true;
+                }
+                fullContent += reasoningChunk;
+              }
+
+              if (contentChunk) {
+                if (isNativeReasoning && !hasClosedNativeReasoning) {
+                  fullContent += "\n</think>\n";
+                  hasClosedNativeReasoning = true;
+                }
+                fullContent += contentChunk;
+              }
+
+              const isInsideReasoning = isNativeReasoning && !hasClosedNativeReasoning;
+              if (onChunk) {
+                if (isInsideReasoning) {
+                  onChunk(fullContent, false);
+                } else {
+                  const cleaned = cleanStreamingJson(fullContent);
+                  const isExtracting = (fullContent.includes("<think>") && !fullContent.includes("</think>"))
+                    ? false
+                    : cleaned.length < fullContent.trim().length;
+                  onChunk(cleaned, isExtracting);
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err.name === "AbortError" || signal.aborted || err.message?.toLowerCase().includes("abort")) {
+        console.log("Stream reading aborted safely.");
+      } else {
+        throw err;
+      }
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      clearInterval(watchdog);
+    }
+
+    return fullContent;
+  } else {
+    const payload = await response.json();
+    if (payload.error) throw new Error(payload.error);
+    return typeof payload === "string" ? payload : (payload.content || JSON.stringify(payload));
+  }
 }

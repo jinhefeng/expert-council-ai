@@ -5,7 +5,7 @@ import remarkBreaks from "remark-breaks";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { ChatMessage, Expert, SystemPromptsConfig } from "@/lib/types";
-import { beautifyListFormatting, extractStreamingJsonKey, isStreamingJsonKeyClosed } from "@/lib/content-parser";
+import { beautifyListFormatting } from "@/lib/content-parser";
 import "katex/dist/katex.min.css";
 
 const SYSTEM_LOADERS = {
@@ -182,10 +182,7 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
     isThinkingDone = true;
   }
 
-  // 针对 AI 主持人总结消息进行流式提取 summary 正文，避免在流式期间将残损的 JSON 裸露渲染
-  if (isMod && message.senderName !== "系统提示" && message.senderName !== "系统") {
-    displayContent = extractStreamingJsonKey(displayContent, "summary");
-  }
+
 
   // 计算专家或者主持人首字就绪前的 Loading 状态
   const isExpertTTFB = isExp && speakingExpertId === message.senderId && safeContent.length === 0;
@@ -204,15 +201,16 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
     )
   );
 
-  const shouldShowModSummaryLoading =
+  const shouldShowModSummaryLoading = !!(
     isMod &&
     !message.moderatorSummary &&
-    isStreamingJsonKeyClosed(safeContent, "summary") &&
+    message.isStanceExtracting &&
     displayContent.length > 0 &&
     safeContent !== "__TIMEOUT__" &&
     safeContent !== "__ERROR__" &&
     message.senderName !== "系统提示" &&
-    message.senderName !== "系统";
+    message.senderName !== "系统"
+  );
 
   return (
     <article className={`chat-message ${message.role}`}>

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Expert } from "@/lib/types";
+import { Expert, LLMEngineConfig } from "@/lib/types";
 
 interface ExpertModalProps {
   isOpen: boolean;
@@ -8,6 +8,7 @@ interface ExpertModalProps {
   onClose: () => void;
   onSave: (expert: Expert) => void;
   meetingContext?: { name: string; description?: string };
+  engineConfigs: LLMEngineConfig[];
 }
 
 const InfoTooltip = ({ text }: { text: string }) => (
@@ -34,7 +35,7 @@ const InfoTooltip = ({ text }: { text: string }) => (
   </div>
 );
 
-export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetingContext }: ExpertModalProps) {
+export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetingContext, engineConfigs }: ExpertModalProps) {
   const [draft, setDraft] = useState<Partial<Expert>>({});
   const [error, setError] = useState<string | null>(null);
   const [isGeneratingExpert, setIsGeneratingExpert] = useState(false);
@@ -156,10 +157,12 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
         ragEndpoint: initialData?.ragEndpoint || "",
         ragToken: initialData?.ragToken || "",
         ragDatasetId: initialData?.ragDatasetId || "",
+        modelMode: initialData?.modelMode || "default",
+        modelId: initialData?.modelId || engineConfigs.find(c => c.isActive)?.id || engineConfigs[0]?.id || "",
       });
       setError(null);
     }
-  }, [isOpen, initialData]);
+  }, [isOpen, initialData, engineConfigs]);
 
   useEffect(() => {
     setTestStatus("idle");
@@ -198,6 +201,8 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
       ragEndpoint: draft.isExternalAgent ? undefined : draft.ragEndpoint,
       ragToken: draft.isExternalAgent ? undefined : draft.ragToken,
       ragDatasetId: draft.isExternalAgent ? undefined : draft.ragDatasetId,
+      modelMode: draft.isExternalAgent ? undefined : (draft.modelMode || "default"),
+      modelId: draft.isExternalAgent ? undefined : (draft.modelMode === "custom" ? (draft.modelId || engineConfigs.find(c => c.isActive)?.id || engineConfigs[0]?.id || "") : undefined),
     };
 
     onSave(finalExpert);
@@ -423,6 +428,49 @@ export function ExpertModal({ isOpen, mode, initialData, onClose, onSave, meetin
                     style={{ width: "100%", marginTop: "8px" }}
                   />
                 </label>
+
+                {/* 大模型路由设置 */}
+                <div style={{ marginTop: "16px", padding: "16px", border: "1px solid var(--line-strong)", borderRadius: "8px", background: "var(--surface-strong)" }}>
+                  <div style={{ fontWeight: 600, fontSize: "13.5px", marginBottom: "12px", display: "flex", alignItems: "center" }}>
+                    大模型路由设置
+                    <InfoTooltip text="为该智能体指定专属的思考大模型，可与会议室默认模型不同。" />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                    <label className="compact-field" style={{ marginBottom: 0 }}>
+                      <span>路由模式</span>
+                      <select
+                        value={draft.modelMode || "default"}
+                        onChange={e => setDraft(prev => ({ ...prev, modelMode: e.target.value as "default" | "custom" }))}
+                        style={{ width: "100%", padding: "8px", borderRadius: "6px", border: "1px solid var(--line)", background: "var(--surface)" }}
+                      >
+                        <option value="default">默认模型 (跟随会议室配置)</option>
+                        <option value="custom">独立指定大模型</option>
+                      </select>
+                    </label>
+                    {draft.modelMode === "custom" && (
+                      <label className="compact-field" style={{ marginBottom: 0, marginTop: "4px" }}>
+                        <span>目标大模型</span>
+                        <select
+                          value={draft.modelId || ""}
+                          onChange={e => setDraft(prev => ({ ...prev, modelId: e.target.value }))}
+                          style={{ width: "100%", padding: "8px", borderRadius: "6px", border: "1px solid var(--line)", background: "var(--surface)" }}
+                        >
+                          {engineConfigs.length === 0 && (
+                            <option value="">未配置大模型</option>
+                          )}
+                          {engineConfigs.map(c => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                        {engineConfigs.length === 0 && (
+                          <span style={{ fontSize: "11px", color: "var(--muted)", marginTop: "4px", display: "block" }}>
+                            💡 提示：当前未配置大模型引擎，无法选择。请前往“后台设置 · 模型管理”添加并激活。
+                          </span>
+                        )}
+                      </label>
+                    )}
+                  </div>
+                </div>
 
                 {/* 是否开启 RAG 检索 */}
                 <label className={`external-agent-toggle-card ${draft.ragEnabled ? "is-checked" : ""}`} style={{ marginTop: "16px", marginBottom: "12px" }}>

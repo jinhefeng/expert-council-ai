@@ -510,6 +510,8 @@ export default function AdminPage() {
         temperament: finalExpert.temperament,
         systemPrompt: finalExpert.systemPrompt,
         debateIntensity: finalExpert.debateIntensity,
+        modelMode: finalExpert.modelMode,
+        modelId: finalExpert.modelId,
       };
 
       if (existingIdx >= 0) {
@@ -1460,6 +1462,7 @@ export default function AdminPage() {
         initialData={expertDraft}
         onClose={() => setIsExpertModalOpen(false)}
         onSave={handleSaveExpert}
+        engineConfigs={engineConfigs}
       />
 
       {/* 全局确认 Modal */}
