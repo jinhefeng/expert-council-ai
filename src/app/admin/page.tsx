@@ -1075,7 +1075,7 @@ export default function AdminPage() {
                   <input type="number" required value={llmParams.streamInactiveTimeoutSeconds ?? 30} onChange={e => setLlmParams({ ...llmParams, streamInactiveTimeoutSeconds: parseInt(e.target.value) })} />
                 </label>
                 <label className="compact-field">
-                  <span>外部专家首字响应超时 (秒)<CommonHelpButton title="外部专家首字响应超时" text="请求外部智能体发言时，等待第一个字流式返回的最大秒数，超时将自动跳过此智能体（默认90秒）。" onShowHelp={showCommonHelp} /></span>
+                  <span>专家首字响应/请求超时 (秒)<CommonHelpButton title="专家首字响应/请求超时" text="请求智能体专家发言时，等待首字流式返回或等待响应的最大秒数，超时将自动安全跳过此智能体。对内置和外部专家均生效（默认90秒）。" onShowHelp={showCommonHelp} /></span>
                   <input type="number" required value={llmParams.expertFirstCharTimeoutSeconds ?? 90} onChange={e => setLlmParams({ ...llmParams, expertFirstCharTimeoutSeconds: parseInt(e.target.value) })} />
                 </label>
                 <label className="compact-field">

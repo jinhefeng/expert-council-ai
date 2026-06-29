@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useCallback,
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -129,6 +130,40 @@ export default function Home() {
   const [isEditingConclusion, setIsEditingConclusion] = useState(false);
   const [conclusionDraft, setConclusionDraft] = useState("");
   const [unlockedComposers, setUnlockedComposers] = useState<Record<string, boolean>>({});
+
+  // --- 独立的绝对计时状态与 Refs ---
+  const [activeTurnDuration, setActiveTurnDuration] = useState<number>(0);
+  const activeTurnTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const activeMessageIdRef = useRef<string | null>(null);
+
+  const startActiveTurnTimer = (msgId: string) => {
+    if (activeTurnTimerRef.current) {
+      clearInterval(activeTurnTimerRef.current);
+    }
+    activeMessageIdRef.current = msgId;
+    setActiveTurnDuration(0);
+    const startTime = Date.now();
+    activeTurnTimerRef.current = setInterval(() => {
+      setActiveTurnDuration(parseFloat(((Date.now() - startTime) / 1000).toFixed(1)));
+    }, 100);
+  };
+
+  const stopActiveTurnTimer = () => {
+    if (activeTurnTimerRef.current) {
+      clearInterval(activeTurnTimerRef.current);
+      activeTurnTimerRef.current = null;
+    }
+    activeMessageIdRef.current = null;
+    setActiveTurnDuration(0);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (activeTurnTimerRef.current) {
+        clearInterval(activeTurnTimerRef.current);
+      }
+    };
+  }, []);
   
   const [discussingMeetings, setDiscussingMeetings] = useState<Record<string, boolean>>({});
   const [speakingExpertIds, setSpeakingExpertIds] = useState<Record<string, string | null>>({});
@@ -537,7 +572,13 @@ export default function Home() {
               message.statuses.forEach((s: any) => {
                 statuses[s.expertId] = s.status;
               });
-              setBotStatuses(statuses);
+              setBotStatuses(prev => {
+                const keysNew = Object.keys(statuses);
+                const keysPrev = Object.keys(prev);
+                const isChanged = keysNew.length !== keysPrev.length || 
+                  keysNew.some(k => statuses[k] !== prev[k]);
+                return isChanged ? statuses : prev;
+              });
               break;
 
             case "stream_chunk":
@@ -794,13 +835,37 @@ export default function Home() {
   }, [engineConfigs]);
 
   // 更新当前会议属性并保存
+  // 更新当前会议属性并保存 (函数式升级以彻底消除闭包竞态覆盖 bug)
   async function updateActiveMeeting(fields: Partial<Meeting>) {
-    if (!activeMeeting) return;
-    const updated = { ...activeMeeting, ...fields, updatedAt: Date.now() };
-    const nextMeetings = meetings.map(m => m.id === activeMeetingId ? updated : m);
-    setMeetings(nextMeetings);
-    await storage.saveMeeting(TENANT_ID, updated);
+    if (!activeMeetingId) return;
+    setMeetings(prevMeetings => {
+      const currentM = prevMeetings.find(m => m.id === activeMeetingId);
+      if (!currentM) return prevMeetings;
+      const updated = { ...currentM, ...fields, updatedAt: Date.now() };
+      void storage.saveMeeting(TENANT_ID, updated);
+      return prevMeetings.map(m => m.id === activeMeetingId ? updated : m);
+    });
   }
+
+  // 专家卡片多勾选并发防竞态更新专用动作 (以最新 prev 状态队列过滤或添加，防连点覆盖)
+  const toggleExpertSelection = useCallback((expertId: string) => {
+    if (!activeMeetingId) return;
+    setMeetings(prevMeetings => {
+      const currentM = prevMeetings.find(m => m.id === activeMeetingId);
+      if (!currentM) return prevMeetings;
+      const isSelected = currentM.expertIds.includes(expertId);
+      const nextIds = isSelected
+        ? currentM.expertIds.filter(id => id !== expertId)
+        : [...currentM.expertIds, expertId];
+      const updated = {
+        ...currentM,
+        expertIds: nextIds,
+        updatedAt: Date.now()
+      };
+      void storage.saveMeeting(TENANT_ID, updated);
+      return prevMeetings.map(m => m.id === activeMeetingId ? updated : m);
+    });
+  }, [activeMeetingId, storage]);
 
   // 会议管理
   function openNewMeetingModal() {
@@ -1252,16 +1317,37 @@ export default function Home() {
       meetingDesc: meeting.description,
     };
 
-    const fullContent = await requestStreamingTurn({
-      endpoint: "/api/discussions/expert-turn",
-      body,
-      signal,
-      streamInactiveTimeoutSeconds: llmParams?.streamInactiveTimeoutSeconds ?? 30,
-      onChunk,
-      errorMsgFallback: "大模型在生成智能体观点时失败。"
-    });
+    // 性能与稳定性增强：为内置专家网络请求挂载全局强制防假死超时器，复用后台首字超时参数（默认 90 秒）
+    const internalExpertTimeoutSecs = llmParams?.expertFirstCharTimeoutSeconds ?? 90;
+    const timeoutController = new AbortController();
+    
+    // 联动父级 Abort 信号
+    const linkAbort = () => timeoutController.abort();
+    signal.addEventListener("abort", linkAbort);
+    
+    const globalTimeoutId = setTimeout(() => {
+      timeoutController.abort();
+    }, internalExpertTimeoutSecs * 1000);
 
-    return extractAndCleanJson(fullContent, expert.name, expert.title);
+    try {
+      const fullContent = await requestStreamingTurn({
+        endpoint: "/api/discussions/expert-turn",
+        body,
+        signal: timeoutController.signal,
+        streamInactiveTimeoutSeconds: llmParams?.streamInactiveTimeoutSeconds ?? 30,
+        onChunk,
+        errorMsgFallback: "大模型在生成智能体观点时失败。"
+      });
+      return extractAndCleanJson(fullContent, expert.name, expert.title);
+    } catch (streamErr: any) {
+      if (timeoutController.signal.aborted && !signal.aborted) {
+        throw new Error(`内置专家 [${expert.name}] 响应超时：大模型未在指定 ${internalExpertTimeoutSecs} 秒内完成响应，流程已自动跳过。`);
+      }
+      throw streamErr;
+    } finally {
+      clearTimeout(globalTimeoutId);
+      signal.removeEventListener("abort", linkAbort);
+    }
   }
   // 智能相关度下一发言人决策
   async function requestNextSpeakerId(
@@ -1563,6 +1649,7 @@ export default function Home() {
         setSynthesisPendingMeetings(prev => ({ ...prev, [targetMeetingId]: true }));
         
         const modMessageId = `msg-${Date.now()}-mod`;
+        const modMessageStartTime = Date.now(); // 绝对计时起点 (气泡出现)
         const currentModMode = moderatorModes.find(m => m.id === currentMeeting.moderatorId) || moderatorModes[0];
         let modMessage: ChatMessage = {
           id: modMessageId,
@@ -1578,8 +1665,8 @@ export default function Home() {
         let nextMsgs = [...currentMeeting.messages, modMessage];
         currentMeeting = { ...currentMeeting, messages: nextMsgs };
         setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
+        startActiveTurnTimer(modMessageId);
 
-        const synthStartTime = Date.now();
         const synth = await requestSynthesis(
           currentMeeting, 
           userQuestion, 
@@ -1591,7 +1678,8 @@ export default function Home() {
             modMessage = { 
               ...modMessage, 
               content: text,
-              isStanceExtracting: isExtracting || false
+              isStanceExtracting: isExtracting || false,
+              duration: parseFloat(((Date.now() - modMessageStartTime) / 1000).toFixed(1))
             };
             setMeetings((prev) =>
               prev.map((m) => {
@@ -1605,7 +1693,8 @@ export default function Home() {
           }
         );
         
-        const synthDuration = parseFloat(((Date.now() - synthStartTime) / 1000).toFixed(1));
+        stopActiveTurnTimer();
+        const synthDuration = parseFloat(((Date.now() - modMessageStartTime) / 1000).toFixed(2)); // 气泡结束绝对时长
         
         // 流式读取完成，大模型开始 done。为了给用户提供提炼 Loading 的平滑过渡视觉，我们先保持 Loading 状态
         modMessage = {
@@ -1782,7 +1871,12 @@ export default function Home() {
           let currentExpert: Expert;
           if (currentMeeting.turnOrderMode === "relevance" && remainCandidates.length > 1) {
             setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: true }));
-            const nextId = await requestNextSpeakerId(activeQuestion, previousTurns, remainCandidates, conversationHistory, signal);
+            let nextId = remainCandidates[0].id;
+            try {
+              nextId = await requestNextSpeakerId(activeQuestion, previousTurns, remainCandidates, conversationHistory, signal);
+            } catch (err) {
+              console.warn("[MeetingLoop] 获取智能下一发言人失败，已自动降级为顺序选择:", err);
+            }
             setAssigningNextSpeaker(prev => ({ ...prev, [targetMeetingId]: false }));
             currentExpert = remainCandidates.find(e => e.id === nextId) || remainCandidates[0];
           } else {
@@ -1794,6 +1888,7 @@ export default function Home() {
 
           // 2. 先创建一条空的专家发言
           const expertMessageId = `msg-${Date.now()}-${currentExpert.id}`;
+          const expertMessageStartTime = Date.now(); // 绝对计时起点 (气泡出现)
           let expertMessage: ChatMessage = {
             id: expertMessageId,
             meetingId: targetMeetingId,
@@ -1809,11 +1904,12 @@ export default function Home() {
           let nextMsgs = [...currentMeeting.messages, expertMessage];
           currentMeeting = { ...currentMeeting, messages: nextMsgs };
           setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
+          startActiveTurnTimer(expertMessageId);
 
           let finalTurnContent = "";
           let finalExpertStance = undefined;
+          let finalExpertDuration = 0;
 
-          const expertTurnStartTime = Date.now();
           try {
             let guidedQuestion = activeQuestion;
             if (discussionDecisions.length > 0) {
@@ -1832,7 +1928,8 @@ export default function Home() {
                 expertMessage = { 
                   ...expertMessage, 
                   content: text,
-                  isStanceExtracting: isExtracting || false
+                  isStanceExtracting: isExtracting || false,
+                  duration: parseFloat(((Date.now() - expertMessageStartTime) / 1000).toFixed(1))
                 };
                 setMeetings((prev) =>
                   prev.map((m) => {
@@ -1848,6 +1945,7 @@ export default function Home() {
             
             finalTurnContent = turnResult.content;
             finalExpertStance = turnResult.expertStance;
+            finalExpertDuration = parseFloat(((Date.now() - expertMessageStartTime) / 1000).toFixed(2)); // 气泡结束绝对时长
           } catch (error: any) {
             console.error(`专家 [${currentExpert.name}] 发言异常:`, error);
             if (error.name === "AbortError" || signal.aborted) throw error;
@@ -1855,13 +1953,15 @@ export default function Home() {
             const isTimeout = errMsg.includes("超时") || errMsg.includes("timeout") || errMsg.includes("limit");
             finalTurnContent = isTimeout ? "__TIMEOUT__" : "__ERROR__";
             finalExpertStance = undefined;
+            finalExpertDuration = parseFloat(((Date.now() - expertMessageStartTime) / 1000).toFixed(2));
           }
 
+          stopActiveTurnTimer();
           expertMessage = {
             ...expertMessage,
             content: finalTurnContent,
             expertStance: finalExpertStance,
-            duration: parseFloat(((Date.now() - expertTurnStartTime) / 1000).toFixed(1)),
+            duration: finalExpertDuration,
           };
 
           nextMsgs = currentMeeting.messages.map(msg => 
@@ -1899,37 +1999,54 @@ export default function Home() {
           createdAt: Date.now(),
         };
 
+        const modMessageStartTime = Date.now(); // 绝对计时起点 (气泡出现)
         let nextMsgs = [...currentMeeting.messages, modMessage];
         currentMeeting = { ...currentMeeting, messages: nextMsgs };
         setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeeting : m));
+        startActiveTurnTimer(modMessageId);
 
-        const synthStartTime = Date.now();
-        const synth = await requestSynthesis(
-          currentMeeting,
-          activeQuestion,
-          previousTurns,
-          activeContext,
-          conversationHistory,
-          signal,
-          (text, isExtracting) => {
-            modMessage = { 
-              ...modMessage, 
-              content: text,
-              isStanceExtracting: isExtracting || false
-            };
-            setMeetings((prev) =>
-              prev.map((m) => {
-                if (m.id !== targetMeetingId) return m;
-                const updatedMessages = m.messages.map((msg) =>
-                  msg.id === modMessageId ? modMessage : msg
-                );
-                return { ...m, messages: updatedMessages };
-              })
-            );
-          }
-        );
+        let synth;
+        try {
+          synth = await requestSynthesis(
+            currentMeeting,
+            activeQuestion,
+            previousTurns,
+            activeContext,
+            conversationHistory,
+            signal,
+            (text, isExtracting) => {
+              modMessage = { 
+                ...modMessage, 
+                content: text,
+                isStanceExtracting: isExtracting || false,
+                duration: parseFloat(((Date.now() - modMessageStartTime) / 1000).toFixed(1))
+              };
+              setMeetings((prev) =>
+                prev.map((m) => {
+                  if (m.id !== targetMeetingId) return m;
+                  const updatedMessages = m.messages.map((msg) =>
+                    msg.id === modMessageId ? modMessage : msg
+                  );
+                  return { ...m, messages: updatedMessages };
+                })
+              );
+            }
+          );
+        } catch (synthError: any) {
+          console.error("[MeetingLoop] 主持人总结请求异常:", synthError);
+          if (synthError.name === "AbortError" || signal.aborted) throw synthError;
+          synth = {
+            summary: "⚠️ [主持人提炼纪要时发生网络连接异常，已自动跳过该总结环节以保障流程流转]",
+            consensus: [],
+            disagreements: [],
+            decisions: [],
+            nextActions: [],
+            duration: parseFloat(((Date.now() - modMessageStartTime) / 1000).toFixed(2))
+          };
+        }
 
-        const synthDuration = parseFloat(((Date.now() - synthStartTime) / 1000).toFixed(1));
+        stopActiveTurnTimer();
+        const synthDuration = parseFloat(((Date.now() - modMessageStartTime) / 1000).toFixed(2)); // 气泡结束绝对时长
 
         // 流式读取完成，大模型开始 done。为了给用户提供提炼 Loading 的平滑过渡视觉，我们先保持 Loading 状态
         modMessage = {
@@ -2216,9 +2333,11 @@ export default function Home() {
         createdAt: Date.now(),
       };
 
+      const expertMessageStartTime = Date.now(); // 绝对计时起点 (气泡出现)
       let nextMsgs = [...activeMeeting.messages, expertMessage];
       let currentMeetingState = { ...activeMeeting, messages: nextMsgs };
       setMeetings(prev => prev.map(m => m.id === targetMeetingId ? currentMeetingState : m));
+      startActiveTurnTimer(expertMessageId);
 
       const turnResult = await requestExpertTurn(
         activeMeeting,
@@ -2232,7 +2351,8 @@ export default function Home() {
           expertMessage = { 
             ...expertMessage, 
             content: text,
-            isStanceExtracting: isExtracting || false
+            isStanceExtracting: isExtracting || false,
+            duration: parseFloat(((Date.now() - expertMessageStartTime) / 1000).toFixed(1))
           };
           setMeetings((prev) =>
             prev.map((m) => {
@@ -2246,10 +2366,12 @@ export default function Home() {
         }
       );
 
+      stopActiveTurnTimer();
       expertMessage = {
         ...expertMessage,
         content: turnResult.content,
         expertStance: turnResult.expertStance,
+        duration: parseFloat(((Date.now() - expertMessageStartTime) / 1000).toFixed(2)) // 气泡结束绝对时长
       };
 
       nextMsgs = currentMeetingState.messages.map(msg => 
@@ -2657,6 +2779,7 @@ export default function Home() {
                     expertActivationTimestamps={expertActivationTimestamps}
                     setExpertActivationTimestamps={setExpertActivationTimestamps}
                     updateActiveMeeting={updateActiveMeeting}
+                    toggleExpertSelection={toggleExpertSelection}
                     activeMeeting={activeMeeting}
                     botStatus={botStatuses[expert.id]}
                     meetings={meetings}
@@ -2757,6 +2880,7 @@ export default function Home() {
                     allExperts={allExperts}
                     speakingExpertId={speakingExpertIds[activeMeetingId] || null}
                     isSynthesisPending={!!synthesisPendingMeetings[activeMeetingId]}
+                    activeTurnDuration={activeMessageIdRef.current === message.id ? activeTurnDuration : undefined}
                     editingMessageId={editingMessageId}
                     editingContent={editingContent}
                     setEditingMessageId={setEditingMessageId}

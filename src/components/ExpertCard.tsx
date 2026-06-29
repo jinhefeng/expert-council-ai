@@ -20,6 +20,7 @@ interface ExpertCardProps {
   discussingMeetings: Record<string, boolean>;
   activeMeetingId: string;
   handleCallExpertDirectly: (expert: Expert) => void;
+  toggleExpertSelection?: (expertId: string) => void;
   openEditCustomModal: (expert: Expert) => void;
   setDeleteCandidate: (expert: Expert) => void;
 }
@@ -43,6 +44,7 @@ const ExpertCard: React.FC<ExpertCardProps> = ({
   discussingMeetings,
   activeMeetingId,
   handleCallExpertDirectly,
+  toggleExpertSelection,
   openEditCustomModal,
   setDeleteCandidate,
 }) => {
@@ -64,6 +66,17 @@ const ExpertCard: React.FC<ExpertCardProps> = ({
           onClick={() => {
             if (isControlsDisabled) return;
             if (!activeMeeting) return;
+
+            if (toggleExpertSelection) {
+              toggleExpertSelection(expert.id);
+              if (!isSelected) {
+                const newDict = { ...expertActivationTimestamps, [expert.id]: Date.now() };
+                setExpertActivationTimestamps(newDict);
+                localStorage.setItem("DC_expert_activations", JSON.stringify(newDict));
+              }
+              return;
+            }
+
             const ids = isSelected
               ? activeMeeting.expertIds.filter(id => id !== expert.id)
               : [...activeMeeting.expertIds, expert.id];

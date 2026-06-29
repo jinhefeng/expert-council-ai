@@ -134,6 +134,7 @@ interface ChatMessageCardProps {
   allExperts: Expert[];
   speakingExpertId: string | null;
   isSynthesisPending: boolean;
+  activeTurnDuration?: number;
   // 编辑操作
   editingMessageId: string | null;
   editingContent: string;
@@ -157,6 +158,7 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
   allExperts,
   speakingExpertId,
   isSynthesisPending,
+  activeTurnDuration,
   editingMessageId,
   editingContent,
   setEditingMessageId,
@@ -379,14 +381,14 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
                           </svg>
                           {formattedTime}
                         </span>
-                        {typeof message.duration === "number" && (
+                        {((typeof message.duration === "number" || typeof activeTurnDuration === "number") && (
                           <span style={{ display: "inline-flex", alignItems: "center", gap: "3px", color: "var(--amber)", fontWeight: 500 }}>
                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ fill: "currentColor" }}>
                               <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
                             </svg>
-                            {message.duration}s
+                            {typeof activeTurnDuration === "number" ? activeTurnDuration : message.duration}s
                           </span>
-                        )}
+                        ))}
                       </div>
                     )}
                   </div>
@@ -545,6 +547,7 @@ const areEqual = (prevProps: ChatMessageCardProps, nextProps: ChatMessageCardPro
     prevProps.message.moderatorSummary === nextProps.message.moderatorSummary &&
     prevProps.message.sources === nextProps.message.sources &&
     prevProps.message.duration === nextProps.message.duration &&
+    prevProps.activeTurnDuration === nextProps.activeTurnDuration &&
     prevProps.isSessionActive === nextProps.isSessionActive &&
     prevProps.editingMessageId === nextProps.editingMessageId &&
     prevProps.editingContent === nextProps.editingContent &&
