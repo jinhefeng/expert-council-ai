@@ -736,3 +736,29 @@ export function extractAndCleanModeratorJson(rawText: string): {
     moderatorSummary: { consensus, disagreements, decisions, nextActions }
   };
 }
+
+/**
+ * 统一的思维链与正文内容提取工具
+ */
+export function parseThinkingContent(rawText: string): {
+  thinkingContent: string;
+  displayContent: string;
+  isThinkingDone: boolean;
+} {
+  const text = rawText || "";
+  let displayContent = text;
+  let thinkingContent = "";
+  let isThinkingDone = false;
+
+  const thinkMatch = text.match(/<think>([\s\S]*?)(?:<\/think>|$)/i);
+  if (thinkMatch) {
+    thinkingContent = thinkMatch[1].trim();
+    isThinkingDone = text.toLowerCase().includes("</think>");
+    displayContent = text.replace(thinkMatch[0], "").trim();
+  } else {
+    isThinkingDone = true;
+  }
+
+  return { thinkingContent, displayContent, isThinkingDone };
+}
+

@@ -17,8 +17,9 @@ import "katex/dist/katex.min.css";
 import { experts as defaultExperts, moderatorModes, mergeSystemExperts } from "@/lib/experts";
 import { ExpertModal } from "@/components/ExpertModal";
 import ChatMessageCard from "@/components/ChatMessageCard";
+import { ThinkingBlock } from "@/components/ThinkingBlock";
 import { LocalStorageService } from "@/lib/storage-service";
-import { extractAndCleanJson, cleanStreamingJson, cleanAndParseJson, beautifyListFormatting, extractInquiryPrompt, extractAndCleanModeratorJson } from "@/lib/content-parser";
+import { extractAndCleanJson, cleanStreamingJson, cleanAndParseJson, beautifyListFormatting, extractInquiryPrompt, extractAndCleanModeratorJson, parseThinkingContent } from "@/lib/content-parser";
 import {
   Expert,
   LLMEngineConfig,
@@ -3353,54 +3354,65 @@ export default function Home() {
               </div>
             )}
 
-            {/* 最终结论展示/编辑面板 (讨论解锁时不展示) */}
-            {activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && (
-              <div id="conclusion-panel" className="conclusion-panel" style={{ 
-                margin: "32px 18px 0px", 
-                padding: "24px 24px 8px 24px", 
-                border: "2px solid var(--amber)", 
-                borderRadius: "12px", 
-                background: "var(--amber-soft)",
-                position: "relative",
-                scrollMarginTop: "32px"
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", borderBottom: "1px solid rgba(212,175,55,0.3)", paddingBottom: "12px" }}>
-                  <h3 style={{ margin: 0, color: "#684c08", display: "flex", alignItems: "center", gap: "8px", fontSize: "16px" }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
-                    会议最终结论
-                  </h3>
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    <button className="ghost-button export-hidden" onClick={() => { setConclusionDraft(activeMeeting.finalConclusion || ""); setIsEditingConclusion(true); }} style={{ fontSize: "12px", padding: "4px 12px", height: "auto", minHeight: "28px", display: "flex", alignItems: "center", gap: "6px" }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                      编辑
-                    </button>
-                  </div>
-                </div>
-                
-                {isEditingConclusion ? (
-                  <div>
-                    <textarea 
-                      value={conclusionDraft} 
-                      onChange={e => setConclusionDraft(e.target.value)}
-                      style={{ width: "100%", height: "200px", padding: "12px", borderRadius: "8px", border: "1px solid var(--line-strong)", resize: "vertical", fontFamily: "inherit", fontSize: "14px", lineHeight: 1.6 }}
-                    />
-                    <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
-                      <button className="ghost-button" onClick={() => setIsEditingConclusion(false)}>取消</button>
-                      <button className="primary-button" onClick={handleSaveConclusion}>保存结论</button>
+            {/* 最终结论展示/编辑面板 (讨论解锁及提炼生成时不展示) */}
+            {activeMeeting?.finalConclusion && !unlockedComposers[activeMeetingId] && !generatingConclusions[activeMeetingId] && (() => {
+              const { displayContent } = parseThinkingContent(activeMeeting?.finalConclusion || "");
+
+              return (
+                <div id="conclusion-panel" className="conclusion-panel" style={{ 
+                  margin: "32px 18px 0px", 
+                  padding: "24px 24px 8px 24px", 
+                  border: "2px solid var(--amber)", 
+                  borderRadius: "12px", 
+                  background: "var(--amber-soft)",
+                  position: "relative",
+                  scrollMarginTop: "32px"
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", borderBottom: "1px solid rgba(212,175,55,0.3)", paddingBottom: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "16px", flex: 1 }}>
+                      <h3 style={{ margin: 0, color: "#684c08", display: "flex", alignItems: "center", gap: "8px", fontSize: "16px" }}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+                        会议最终结论
+                      </h3>
+                    </div>
+                    
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button className="ghost-button export-hidden" onClick={() => { 
+                        const { displayContent: editContent } = parseThinkingContent(activeMeeting?.finalConclusion || "");
+                        setConclusionDraft(editContent); 
+                        setIsEditingConclusion(true); 
+                      }} style={{ fontSize: "12px", padding: "4px 12px", height: "auto", minHeight: "28px", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                        编辑
+                      </button>
                     </div>
                   </div>
-                ) : (
-                  <div className="markdown-body" style={{ fontSize: "14px", color: "var(--ink)" }}>
-                    <ReactMarkdown 
-                      remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
-                      rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
-                    >
-                      {activeMeeting.finalConclusion}
-                    </ReactMarkdown>
-                  </div>
-                )}
-              </div>
-            )}
+                  
+                  {isEditingConclusion ? (
+                    <div>
+                      <textarea 
+                        value={conclusionDraft} 
+                        onChange={e => setConclusionDraft(e.target.value)}
+                        style={{ width: "100%", height: "200px", padding: "12px", borderRadius: "8px", border: "1px solid var(--line-strong)", resize: "vertical", fontFamily: "inherit", fontSize: "14px", lineHeight: 1.6 }}
+                      />
+                      <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "12px" }}>
+                        <button className="ghost-button" onClick={() => setIsEditingConclusion(false)}>取消</button>
+                        <button className="primary-button" onClick={handleSaveConclusion}>保存结论</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="markdown-body" style={{ fontSize: "14px", color: "var(--ink)" }}>
+                      <ReactMarkdown 
+                        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+                        rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
+                      >
+                        {displayContent}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div ref={chatEndRef} />
           </section>

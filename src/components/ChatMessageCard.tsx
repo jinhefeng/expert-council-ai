@@ -5,7 +5,8 @@ import remarkBreaks from "remark-breaks";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { ChatMessage, Expert, SystemPromptsConfig } from "@/lib/types";
-import { beautifyListFormatting } from "@/lib/content-parser";
+import { beautifyListFormatting, parseThinkingContent } from "@/lib/content-parser";
+import { ThinkingBlock } from "./ThinkingBlock";
 import "katex/dist/katex.min.css";
 
 const SYSTEM_LOADERS = {
@@ -170,17 +171,8 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
     displayContent = "";
   }
 
-  let thinkingContent = "";
-  let isThinkingDone = false;
-  const thinkMatch = displayContent.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
-  
-  if (thinkMatch) {
-    thinkingContent = thinkMatch[1].trim();
-    isThinkingDone = safeContent.includes("</think>");
-    displayContent = displayContent.replace(thinkMatch[0], "").trim();
-  } else {
-    isThinkingDone = true;
-  }
+  const { thinkingContent, displayContent: cleanedDisplayContent, isThinkingDone } = parseThinkingContent(displayContent);
+  displayContent = cleanedDisplayContent;
 
 
 
@@ -278,26 +270,11 @@ const ChatMessageCard: React.FC<ChatMessageCardProps> = ({
                     })()}
                   </span>
                   
-                  {thinkingContent && isThinkingDone && (
-                    <details style={{ flex: 1, textAlign: isUser ? "right" : "left" }}>
-                      <summary style={{ 
-                        fontSize: "11px", color: "var(--muted)", cursor: "pointer", userSelect: "none", 
-                        fontWeight: "500", display: "inline-block",
-                        background: "var(--surface-strong)", padding: "2px 8px", borderRadius: "999px",
-                        border: "1px solid var(--line)"
-                      }}>
-                        深度思考已折叠
-                      </summary>
-                      <div style={{ 
-                        fontSize: "13px", color: "var(--muted)", whiteSpace: "pre-wrap", 
-                        fontStyle: "italic", marginTop: "8px", padding: "10px 14px", 
-                        background: "rgba(0,0,0,0.02)", border: "1px dashed var(--line)", 
-                        borderRadius: "6px", textAlign: "left"
-                      }}>
-                        {thinkingContent}
-                      </div>
-                    </details>
-                  )}
+                  <ThinkingBlock 
+                    thinkingContent={thinkingContent} 
+                    isThinkingDone={isThinkingDone} 
+                    textAlign={isUser ? "right" : "left"} 
+                  />
                 </div>
               )}
 
